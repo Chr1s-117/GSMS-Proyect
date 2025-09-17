@@ -20,16 +20,21 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
+      # Configure AWS credentials using OIDC
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+
+      # --- Nuevo paso de diagnóstico --- 
+      - name: Who am I?
+        run: aws sts get-caller-identity
+      # -------------------------------
 
       - name: Determinar SHA
         id: picksha
