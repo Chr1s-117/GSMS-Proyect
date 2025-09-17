@@ -81,28 +81,10 @@ jobs:
             TARGET="--targets Key=tag:${{ vars.EC2_TARGET_TAG_KEY }},Values=${{ vars.EC2_TARGET_TAG_VALUE }}"
           fi
 
-          CMD_OUT=$(aws ssm send-command \
+          echo "Usando TARGET: $TARGET"  # Para visualizar el valor de TARGET en los logs
+
+          aws ssm send-command \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${{ steps.picksha.outputs.SHA }}" \
             --parameters commands="/usr/local/bin/deploy_from_s3.sh ${RELEASE_URI}" \
-            $TARGET \
-            --output json)
-
-          CMD_ID=$(echo "$CMD_OUT" | jq -r '.Command.CommandId')
-
-          # Si pasaste InstanceIds, hacemos polling de éxito:
-          if [ -n "${{ vars.EC2_INSTANCE_IDS }}" ]; then
-            IDS=$(echo ${{ vars.EC2_INSTANCE_IDS }} | tr ',' ' ')
-            for ID in $IDS; do
-              for i in {1..30}; do
-                STA=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$ID" --query Status --output text || echo "Pending")
-                echo "[$ID] intento $i -> $STA"
-                if [ "$STA" = "Success" ]; then break; fi
-                if [ "$STA" = "Failed" ] || [ "$STA" = "Cancelled" ] || [ "$STA" = "TimedOut" ]; then exit 1; fi
-                sleep 10
-              done
-            done
-          else
-            # Con targets por tag no hay get-command-invocation por ID; puedes esperar fijo o listar invocations aparte.
-            sleep 60
-          fi
+            $TARGET
