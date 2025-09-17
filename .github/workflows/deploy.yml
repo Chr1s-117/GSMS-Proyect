@@ -84,7 +84,7 @@ jobs:
           echo "Usando TARGET: $TARGET"  # Para visualizar el valor de TARGET en los logs
 
           aws ssm send-command \
-            --document-name "AWS-RunShellScript" \
+            --document-name "arn:aws:ssm:us-east-1:aws:document/AWS-RunShellScript" \
             --comment "Deploy ${{ steps.picksha.outputs.SHA }}" \
             --parameters commands="/usr/local/bin/deploy_from_s3.sh ${RELEASE_URI}" \
             $TARGET
