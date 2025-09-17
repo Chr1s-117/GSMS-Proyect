@@ -55,6 +55,16 @@ jobs:
           DEST="s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}"
           aws s3 sync . "$DEST" --delete --exclude ".git/*" --exclude ".github/*"
 
+      # --- NUEVO PASO AÑADIDO ---
+      - name: Actualizar parámetro package_url (SSM)
+        run: |
+          aws ssm put-parameter \
+            --name "/gsms/prod/app/package_url" \
+            --type String \
+            --value "s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}" \
+            --overwrite
+      # ---------------------------
+
       # 3) SSM: sincronizar a /opt/app y reiniciar servicio
       - name: Deploy via SSM
         env:
