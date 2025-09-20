@@ -1,3 +1,7 @@
 Este es un texto de ejemplo que no contiene ningún código. Puedes utilizar este archivo para probar funciones de lectura y escritura de texto en tus programas.
 Laura intentó aquí nuevamente.
+
+Ahora voy de nuevo (Laura).
+=======
 Chris intentó aquí nuevamente.
+
