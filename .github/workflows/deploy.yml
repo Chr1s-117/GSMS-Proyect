@@ -16,6 +16,13 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  actions: write
+  checks: write
+  pull-requests: write
+  statuses: write
+  deployments: write
+  security-events: write
+  issues: write
 
 jobs:
   deploy:
