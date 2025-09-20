@@ -16,6 +16,13 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  actions: write
+  checks: write
+  pull-requests: write
+  statuses: write
+  deployments: write
+  security-events: write
+  issues: write
 
 jobs:
   deploy:
@@ -88,3 +95,5 @@ jobs:
             --comment "Deploy ${{ steps.picksha.outputs.SHA }}" \
             --parameters commands="/usr/local/bin/deploy_from_s3.sh ${RELEASE_URI}" \
             $TARGET
+
+        # 4) Disable
