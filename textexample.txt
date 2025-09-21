@@ -10,3 +10,5 @@ Laura Cambió Políticas EC2 a una sola.
 Chris CAMBIO muchas cosas en este proyecto. v2
 
 Cambio para Chris a remoto.
+
+Jose debería estar aqui.
