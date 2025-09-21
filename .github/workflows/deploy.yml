@@ -13,16 +13,11 @@ concurrency:
   group: prod-deploy
   cancel-in-progress: false
 
+# Permisos mínimos necesarios para OIDC y despliegues
 permissions:
   id-token: write
   contents: read
-  actions: write
-  checks: write
-  pull-requests: write
-  statuses: write
   deployments: write
-  security-events: write
-  issues: write
 
 jobs:
   deploy:
@@ -31,17 +26,14 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      # Configure AWS credentials using OIDC
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # --- Nuevo paso de diagnóstico --- 
-      - name: Who am I?
+      - name: Who am I? (Diagnostic)
         run: aws sts get-caller-identity
-      # -------------------------------
 
       - name: Determinar SHA
         id: picksha
@@ -52,7 +44,6 @@ jobs:
             echo "SHA=${GITHUB_SHA}" >> $GITHUB_OUTPUT
           fi
 
-      # 1) FRONTEND -> S3/<prefix>/front (solo difs)
       - name: Sync frontend
         run: |
           if [ -d "front" ]; then
@@ -61,13 +52,11 @@ jobs:
             echo "No hay carpeta front/, se omite"
           fi
 
-      # 2) PUBLICAR RELEASE COMPLETO (sin zip) para EC2
       - name: Publicar release
         run: |
           DEST="s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}"
           aws s3 sync . "$DEST" --delete --exclude ".git/*" --exclude ".github/*"
 
-      # --- NUEVO PASO AÑADIDO ---
       - name: Actualizar parámetro package_url (SSM)
         run: |
           aws ssm put-parameter \
@@ -75,10 +64,9 @@ jobs:
             --type String \
             --value "s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}" \
             --overwrite
-      # ---------------------------
 
-      # 3) SSM: sincronizar a /opt/app y reiniciar servicio
-      - name: Deploy via SSM
+      - name: Deploy via SSM (send command)
+        id: send_ssm_command
         env:
           RELEASE_URI: s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}
         run: |
@@ -87,13 +75,57 @@ jobs:
           else
             TARGET="--targets Key=tag:${{ vars.EC2_TARGET_TAG_KEY }},Values=${{ vars.EC2_TARGET_TAG_VALUE }}"
           fi
-
-          echo "Usando TARGET: $TARGET"  # Para visualizar el valor de TARGET en los logs
-
-          aws ssm send-command \
-            --document-name "arn:aws:ssm:us-east-1::document/AWS-RunShellScript" \
+          
+          # Se guarda el CommandId para el siguiente paso
+          CMD_ID=$(aws ssm send-command \
+            --document-name "arn:aws:ssm:us-east-1:aws:document/AWS-RunShellScript" \
             --comment "Deploy ${{ steps.picksha.outputs.SHA }}" \
-            --parameters commands="/usr/local/bin/deploy_from_s3.sh ${RELEASE_URI}" \
-            $TARGET 
+            --parameters commands="['sudo bash -lc \"/usr/local/bin/deploy_from_s3.sh ${RELEASE_URI}\"']" \
+            $TARGET \
+            --query 'Command.CommandId' --output text)
 
-        # 4) Disable
+          echo "CMD_ID=$CMD_ID" >> $GITHUB_OUTPUT
+          echo "Comando enviado a SSM. CommandId: $CMD_ID"
+
+      - name: Wait for SSM command to finish
+        if: steps.send_ssm_command.outputs.CMD_ID != ''
+        env:
+          CMD_ID: ${{ steps.send_ssm_command.outputs.CMD_ID }}
+        run: |
+          set -e
+          echo "Esperando invocaciones para el CommandId: $CMD_ID..."
+          # Bucle para esperar a que la invocación aparezca en el API
+          for i in {1..30}; do
+            COUNT=$(aws ssm list-command-invocations --command-id "$CMD_ID" --query 'length(CommandInvocations)' --output text)
+            [ "$COUNT" -gt 0 ] && break
+            echo "Aún no hay invocaciones... esperando 5s"
+            sleep 5
+          done
+
+          echo "Invocación encontrada. Esperando estado 'Success'..."
+          # Bucle principal para esperar el resultado final
+          for i in {1..120}; do
+            # Verificar si alguna instancia falló
+            BAD_STATUS=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details \
+              --query 'CommandInvocations[?Status==`Failed` || Status==`TimedOut` || Status==`Cancelled`]' --output json)
+            if [ "$BAD_STATUS" != "[]" ]; then
+              echo "Error: Una o más instancias fallaron el despliegue."
+              aws ssm list-command-invocations --command-id "$CMD_ID" --details # Muestra el detalle del error
+              exit 1
+            fi
+
+            # Verificar si todas las instancias han terminado con éxito
+            PENDING_STATUS=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details \
+              --query 'CommandInvocations[?Status!=`Success`]' --output json)
+            if [ "$PENDING_STATUS" = "[]" ]; then
+              echo "¡Éxito! Todas las instancias completaron el despliegue."
+              exit 0
+            fi
+            
+            echo "Despliegue en progreso... esperando 5s"
+            sleep 5
+          done
+
+          echo "Error: Timeout esperando el estado 'Success' después de 10 minutos."
+          aws ssm list-command-invocations --command-id "$CMD_ID" --details # Muestra el último estado
+          exit 1
