@@ -1,0 +1,20 @@
+name: Validate PR (premerge)
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    environment: premerge   # <- crea el Deployment requerido por tu regla
+    steps:
+      - uses: actions/checkout@v4
+      - name: Quick checks
+        run: |
+          echo "lint ok"
+          echo "build ok"

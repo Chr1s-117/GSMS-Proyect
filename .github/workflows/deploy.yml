@@ -1,0 +1,99 @@
+name: Deploy (main) - S3 first, then EC2
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "SHA a desplegar (rollback)"
+        required: false
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write
+  checks: write
+  pull-requests: write
+  statuses: write
+  deployments: write
+  security-events: write
+  issues: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      # Configure AWS credentials using OIDC
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # --- Nuevo paso de diagnóstico --- 
+      - name: Who am I?
+        run: aws sts get-caller-identity
+      # -------------------------------
+
+      - name: Determinar SHA
+        id: picksha
+        run: |
+          if [ -n "${{ github.event.inputs.release_sha }}" ]; then
+            echo "SHA=${{ github.event.inputs.release_sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "SHA=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      # 1) FRONTEND -> S3/<prefix>/front (solo difs)
+      - name: Sync frontend
+        run: |
+          if [ -d "front" ]; then
+            aws s3 sync ./front s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/front --delete
+          else
+            echo "No hay carpeta front/, se omite"
+          fi
+
+      # 2) PUBLICAR RELEASE COMPLETO (sin zip) para EC2
+      - name: Publicar release
+        run: |
+          DEST="s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}"
+          aws s3 sync . "$DEST" --delete --exclude ".git/*" --exclude ".github/*"
+
+      # --- NUEVO PASO AÑADIDO ---
+      - name: Actualizar parámetro package_url (SSM)
+        run: |
+          aws ssm put-parameter \
+            --name "/gsms/prod/app/package_url" \
+            --type String \
+            --value "s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}" \
+            --overwrite
+      # ---------------------------
+
+      # 3) SSM: sincronizar a /opt/app y reiniciar servicio
+      - name: Deploy via SSM
+        env:
+          RELEASE_URI: s3://${{ vars.S3_BUCKET }}/${{ vars.S3_PREFIX }}/releases/${{ steps.picksha.outputs.SHA }}
+        run: |
+          if [ -n "${{ vars.EC2_INSTANCE_IDS }}" ]; then
+            TARGET="--instance-ids $(echo ${{ vars.EC2_INSTANCE_IDS }} | tr -d ' ')"
+          else
+            TARGET="--targets Key=tag:${{ vars.EC2_TARGET_TAG_KEY }},Values=${{ vars.EC2_TARGET_TAG_VALUE }}"
+          fi
+
+          echo "Usando TARGET: $TARGET"  # Para visualizar el valor de TARGET en los logs
+
+          aws ssm send-command \
+            --document-name "arn:aws:ssm:us-east-1:aws:document/AWS-RunShellScript" \
+            --comment "Deploy ${{ steps.picksha.outputs.SHA }}" \
+            --parameters commands="/usr/local/bin/deploy_from_s3.sh ${RELEASE_URI}" \
+            $TARGET
+
+        # 4) Disable
