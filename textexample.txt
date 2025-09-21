@@ -7,4 +7,4 @@ Chris intentó aquí nuevamente.
 
 Laura Cambió Políticas EC2 a una sola.
 
-Chris CAMBIO muchas cosas en este proyecto.
+Chris CAMBIO muchas cosas en este proyecto. v2
