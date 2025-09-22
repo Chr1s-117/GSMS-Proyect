@@ -111,15 +111,108 @@ jobs:
               
               # Fallback: Obtener IDs dinámicos del ASG y enviar comando para recrear script si missing
               echo "Intentando fix: Obteniendo IDs de instancias del ASG..."
-              INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG_NAME" --query "AutoScalingGroups[0].Instances[].InstanceId" --output text | tr '\n' ',' | sed 's/,$//')
+              INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG_NAME" --query "AutoScalingGroups[0].Instances[].InstanceId" --output text | tr '\t' ',' | sed 's/,$//')
               if [ -z "$INSTANCE_IDS" ]; then
                 echo "Error: No se encontraron instancias en el ASG $ASG_NAME."
                 exit 1
               fi
               
               echo "Enviando comando SSM para verificar/crear deploy_from_s3.sh en instancias: $INSTANCE_IDS"
-              FIX_CMD_ID=$(aws ssm send-command --document-name "AWS-RunShellScript" --targets "Key=instanceids,Values=$INSTANCE_IDS" \
-                --parameters '{"commands":["if [ ! -f /usr/local/bin/deploy_from_s3.sh ]; then echo \"[FIX] Creando /usr/local/bin/deploy_from_s3.sh...\"; tee /usr/local/bin/deploy_from_s3.sh >/dev/null <<\"EOF\"\n#!/usr/bin/env bash\nset -euo pipefail\n\n# ====== Configuración (consistente con User Data) ======\nREGION=\"${AWS_DEFAULT_REGION:-us-east-1}\"\nAPP_ROOT=\"/opt/gsms\"\nAPP_DIR=\"${APP_ROOT}/app\"\nVENV_DIR=\"${APP_ROOT}/venv\"\nSERVICE_WEB=\"gsms-web.service\"\nSERVICE_UDP=\"gsms-udp.service\"\nUSER_SVC=\"gsms\"\n\nS3_PATH=\"${1:?Uso: deploy_from_s3.sh s3://bucket/prefix/release_id}\"\n\n# ====== Pre-chequeos ======\ncommand -v aws >/dev/null || { echo \"Falta AWS CLI\"; exit 20; }\ninstall -d -o \"${USER_SVC}\" -g \"${USER_SVC}\" -m 0755 \"${APP_DIR}/src\"\n\n# Chequeo adicional: Verifica si venv está inicializado\nif [ ! -f \"${VENV_DIR}/bin/pip\" ]; then\n  echo \"[ERROR] Venv no inicializado correctamente. Saliendo.\"\n  exit 1\nfi\n\n# ====== Sincronización de Código ======\necho \"[Deploy] Sincronizando código desde ${S3_PATH}\"\naws s3 sync \"${S3_PATH%/}/src/\" \"${APP_DIR}/src/\" --delete --exclude \".git/*\" || true\naws s3 sync \"${S3_PATH%/}/\" \"${APP_DIR}/\" --delete --exclude \"src/*\" --exclude \"releases/*\" --exclude \".git/*\" || true\n\nchown -R ${USER_SVC}:${USER_SVC} \"${APP_DIR}\"\nfind \"${APP_DIR}\" -type d -name \"__pycache__\" -exec rm -rf {} + || true\n\n# ====== Instalación Inteligente de Dependencias ======\nREQ_FILE=\"\"\n[ -f \"${APP_DIR}/requirements.txt\" ] && REQ_FILE=\"${APP_DIR}/requirements.txt\"\n[ -z \"$REQ_FILE\" ] && [ -f \"${APP_DIR}/src/requirements.txt\" ] && REQ_FILE=\"${APP_DIR}/src/requirements.txt\"\n\nif [ -n \"$REQ_FILE\" ]; then\n  CURR_SHA=\"$(sha256sum \"$REQ_FILE\" | awk '{print $1}')\"\n  PREV_SHA_FILE=\"${APP_ROOT}/.requirements.sha256\"\n  PREV_SHA=\"$(cat \"$PREV_SHA_FILE\" 2>/dev/null || echo \"\")\"\n  if [ \"$CURR_SHA\" != \"$PREV_SHA\" ]; then\n    echo \"[Deps] Cambios en requirements -> instalando...\"\n    \"${VENV_DIR}/bin/pip\" install --upgrade pip wheel\n    \"${VENV_DIR}/bin/pip\" install -r \"$REQ_FILE\"\n    echo \"$CURR_SHA\" | tee \"$PREV_SHA_FILE\" >/dev/null\n  else\n    echo \"[Deps] Requirements sin cambios, se omite instalación.\"\n  fi\nelse\n  echo \"[Deps] No se encontró requirements.txt. Instalando dependencias base...\"\n  \"${VENV_DIR}/bin/pip\" install --upgrade pip wheel\n  \"${VENV_DIR}/bin/pip\" install fastapi==0.116.1 uvicorn[standard]==0.35.0 SQLAlchemy==2.0.43 alembic==1.16.5 psycopg2-binary==2.9.10 aiosqlite==0.20.0 pydantic==2.11.7 pydantic-settings==2.1.0 requests==2.31.0 Jinja2==3.1.3\nfi\n\n# Chequeo post-instalación: Verifica si uvicorn y pydantic-settings están instalados\nif [ ! -f \"${VENV_DIR}/bin/uvicorn\" ] || ! \"${VENV_DIR}/bin/pip\" list | grep -q pydantic-settings; then\n  echo \"[ERROR] Uvicorn o pydantic-settings no instalado. Dependencias fallaron.\"\n  exit 1\nfi\n\n# ====== Reinicio de Servicios ======\necho \"[Deploy] Reiniciando servicios...\"\nsystemctl daemon-reload\nif systemctl list-unit-files | grep -q \"^${SERVICE_WEB}\"; then\n  systemctl restart \"${SERVICE_WEB}\"\n  sleep 2\n  systemctl --no-pager --full status \"${SERVICE_WEB}\" | tail -n 50 || true\nfi\nif systemctl list-unit-files | grep -q \"^${SERVICE_UDP}\"; then\n  systemctl restart \"${SERVICE_UDP}\" || true\n  systemctl --no-pager --full status \"${SERVICE_UDP}\" | tail -n 30 || true\nfi\n\n# ====== Verificación y Marca de Versión ======\necho \"release=$(basename \"${S3_PATH}\")\" | tee ${APP_ROOT}/build.txt >/dev/null\ncurl -sS --max-time 3 http://127.0.0.1:8000/health || echo \"[WARN] /health no respondió.\"\necho \"[Deploy] OK\"\nEOF\nchmod +x /usr/local/bin/deploy_from_s3.sh\nsed -i 's/\r$//' /usr/local/bin/deploy_from_s3.sh\necho \"Script recreado.\"; else echo \"Script ya existe.\"; fi"]}' \
+              FIX_CMD_ID=$(aws ssm send-command \
+                --document-name "AWS-RunShellScript" \
+                --targets "Key=instanceids,Values=$INSTANCE_IDS" \
+                --parameters '{
+                  "commands": [
+                    "if [ ! -f /usr/local/bin/deploy_from_s3.sh ]; then",
+                    "  echo \"[FIX] Creando /usr/local/bin/deploy_from_s3.sh...\";",
+                    "  cat <<\"EOF\" >/usr/local/bin/deploy_from_s3.sh",
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    "",
+                    "# ====== Configuración (consistente con User Data) ======",
+                    "REGION=\"${AWS_DEFAULT_REGION:-us-east-1}\"",
+                    "APP_ROOT=\"/opt/gsms\"",
+                    "APP_DIR=\"${APP_ROOT}/app\"",
+                    "VENV_DIR=\"${APP_ROOT}/venv\"",
+                    "SERVICE_WEB=\"gsms-web.service\"",
+                    "SERVICE_UDP=\"gsms-udp.service\"",
+                    "USER_SVC=\"gsms\"",
+                    "",
+                    "S3_PATH=\"${1:?Uso: deploy_from_s3.sh s3://bucket/prefix/release_id}\"",
+                    "",
+                    "# ====== Pre-chequeos ======",
+                    "command -v aws >/dev/null || { echo \"Falta AWS CLI\"; exit 20; }",
+                    "install -d -o \"${USER_SVC}\" -g \"${USER_SVC}\" -m 0755 \"${APP_DIR}/src\"",
+                    "",
+                    "# Chequeo adicional: Verifica si venv está inicializado",
+                    "if [ ! -f \"${VENV_DIR}/bin/pip\" ]; then",
+                    "  echo \"[ERROR] Venv no inicializado correctamente. Saliendo.\"",
+                    "  exit 1",
+                    "fi",
+                    "",
+                    "# ====== Sincronización de Código ======",
+                    "echo \"[Deploy] Sincronizando código desde ${S3_PATH}\"",
+                    "aws s3 sync \"${S3_PATH%/}/src/\" \"${APP_DIR}/src/\" --delete --exclude \".git/*\" || true",
+                    "aws s3 sync \"${S3_PATH%/}/\" \"${APP_DIR}/\" --delete --exclude \"src/*\" --exclude \"releases/*\" --exclude \".git/*\" || true",
+                    "",
+                    "chown -R ${USER_SVC}:${USER_SVC} \"${APP_DIR}\"",
+                    "find \"${APP_DIR}\" -type d -name \"__pycache__\" -exec rm -rf {} + || true",
+                    "",
+                    "# ====== Instalación Inteligente de Dependencias ======",
+                    "REQ_FILE=\"\"",
+                    "[ -f \"${APP_DIR}/requirements.txt\" ] && REQ_FILE=\"${APP_DIR}/requirements.txt\"",
+                    "[ -z \"$REQ_FILE\" ] && [ -f \"${APP_DIR}/src/requirements.txt\" ] && REQ_FILE=\"${APP_DIR}/src/requirements.txt\"",
+                    "",
+                    "if [ -n \"$REQ_FILE\" ]; then",
+                    "  CURR_SHA=\"$(sha256sum \"$REQ_FILE\" | awk '{print $1}')\"",
+                    "  PREV_SHA_FILE=\"${APP_ROOT}/.requirements.sha256\"",
+                    "  PREV_SHA=\"$(cat \"$PREV_SHA_FILE\" 2>/dev/null || echo \"\")\"",
+                    "  if [ \"$CURR_SHA\" != \"$PREV_SHA\" ]; then",
+                    "    echo \"[Deps] Cambios en requirements -> instalando...\"",
+                    "    \"${VENV_DIR}/bin/pip\" install --upgrade pip wheel",
+                    "    \"${VENV_DIR}/bin/pip\" install -r \"$REQ_FILE\"",
+                    "    echo \"$CURR_SHA\" | tee \"$PREV_SHA_FILE\" >/dev/null",
+                    "  else",
+                    "    echo \"[Deps] Requirements sin cambios, se omite instalación.\"",
+                    "  fi",
+                    "else",
+                    "  echo \"[Deps] No se encontró requirements.txt. Instalando dependencias base...\"",
+                    "  \"${VENV_DIR}/bin/pip\" install --upgrade pip wheel",
+                    "  \"${VENV_DIR}/bin/pip\" install fastapi==0.116.1 uvicorn[standard]==0.35.0 SQLAlchemy==2.0.43 alembic==1.16.5 psycopg2-binary==2.9.10 aiosqlite==0.20.0 pydantic==2.11.7 pydantic-settings==2.1.0 requests==2.31.0 Jinja2==3.1.3",
+                    "fi",
+                    "",
+                    "# Chequeo post-instalación: Verifica si uvicorn y pydantic-settings están instalados",
+                    "if [ ! -f \"${VENV_DIR}/bin/uvicorn\" ] || ! \"${VENV_DIR}/bin/pip\" list | grep -q pydantic-settings; then",
+                    "  echo \"[ERROR] Uvicorn o pydantic-settings no instalado. Dependencias fallaron.\"",
+                    "  exit 1",
+                    "fi",
+                    "",
+                    "# ====== Reinicio de Servicios ======",
+                    "echo \"[Deploy] Reiniciando servicios...\"",
+                    "systemctl daemon-reload",
+                    "if systemctl list-unit-files | grep -q \"^${SERVICE_WEB}\"; then",
+                    "  systemctl restart \"${SERVICE_WEB}\"",
+                    "  sleep 2",
+                    "  systemctl --no-pager --full status \"${SERVICE_WEB}\" | tail -n 50 || true",
+                    "fi",
+                    "if systemctl list-unit-files | grep -q \"^${SERVICE_UDP}\"; then",
+                    "  systemctl restart \"${SERVICE_UDP}\" || true",
+                    "  systemctl --no-pager --full status \"${SERVICE_UDP}\" | tail -n 30 || true",
+                    "fi",
+                    "",
+                    "# ====== Verificación y Marca de Versión ======",
+                    "echo \"release=$(basename \"${S3_PATH}\")\" | tee ${APP_ROOT}/build.txt >/dev/null",
+                    "curl -sS --max-time 3 http://127.0.0.1:8000/health || echo \"[WARN] /health no respondió.\"",
+                    "echo \"[Deploy] OK\"",
+                    "EOF",
+                    "  chmod +x /usr/local/bin/deploy_from_s3.sh",
+                    "  sed -i 's/\r$//' /usr/local/bin/deploy_from_s3.sh",
+                    "  echo \"Script recreado.\";",
+                    "else",
+                    "  echo \"Script ya existe.\";",
+                    "fi"
+                  ]
+                }' \
                 --query "Command.CommandId" --output text)
               
               # Espera el fix (similar bucle, simplificado aquí)
@@ -128,11 +221,14 @@ jobs:
                 if [ "$FIX_STATUS" = "[]" ]; then
                   echo "Fix completado. Reintentando deploy original..."
                   # Re-envía el comando original aquí si quieres retry automático
+                  # Por ejemplo:
+                  # ORIGINAL_CMD_ID=$(aws ssm send-command ... )  # Copia el comando de deploy original
+                  # Luego actualiza CMD_ID=$ORIGINAL_CMD_ID y continúa el loop o reinicia la verificación
                   break
                 fi
                 sleep 5
               done
-              exit 1  # Exit por ahora; quita si quieres retry
+              exit 1  # Exit por ahora; quita si quieres retry automático completo
             fi
             
             PENDING_STATUS=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details \
