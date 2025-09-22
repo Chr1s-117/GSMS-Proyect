@@ -89,7 +89,8 @@ jobs:
 
       - name: Esperar y Verificar Despliegue SSM
         env:
-          ASG_NAME: asg-gsms-web  # Reemplaza con el nombre real de tu ASG, e.g., "gsms-web-asg"
+          CMD_ID: ${{ steps.send_ssm_command.outputs.CMD_ID }}
+          ASG_NAME: ${{ vars.ASG_NAME }}
         run: |
           set -e
           echo "Esperando invocaciones para el CommandId: $CMD_ID..."
@@ -147,47 +148,4 @@ jobs:
           
           echo "Error: Timeout esperando el estado 'Success' después de 10 minutos."
           aws ssm list-command-invocations --command-id "$CMD_ID" --details
-          exit 1
-
-      - name: Wait for SSM command to finish
-        if: steps.send_ssm_command.outputs.CMD_ID != ''
-        env:
-          CMD_ID: ${{ steps.send_ssm_command.outputs.CMD_ID }}
-        run: |
-          set -e
-          echo "Esperando invocaciones para el CommandId: $CMD_ID..."
-          # Bucle para esperar a que la invocación aparezca en el API
-          for i in {1..30}; do
-            COUNT=$(aws ssm list-command-invocations --command-id "$CMD_ID" --query 'length(CommandInvocations)' --output text)
-            [ "$COUNT" -gt 0 ] && break
-            echo "Aún no hay invocaciones... esperando 5s"
-            sleep 5
-          done
-
-          echo "Invocación encontrada. Esperando estado 'Success'..."
-          # Bucle principal para esperar el resultado final
-          for i in {1..120}; do
-            # Verificar si alguna instancia falló
-            BAD_STATUS=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details \
-              --query 'CommandInvocations[?Status==`Failed` || Status==`TimedOut` || Status==`Cancelled`]' --output json)
-            if [ "$BAD_STATUS" != "[]" ]; then
-              echo "Error: Una o más instancias fallaron el despliegue."
-              aws ssm list-command-invocations --command-id "$CMD_ID" --details # Muestra el detalle del error
-              exit 1
-            fi
-
-            # Verificar si todas las instancias han terminado con éxito
-            PENDING_STATUS=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details \
-              --query 'CommandInvocations[?Status!=`Success`]' --output json)
-            if [ "$PENDING_STATUS" = "[]" ]; then
-              echo "¡Éxito! Todas las instancias completaron el despliegue."
-              exit 0
-            fi
-            
-            echo "Despliegue en progreso... esperando 5s"
-            sleep 5
-          done
-
-          echo "Error: Timeout esperando el estado 'Success' después de 10 minutos."
-          aws ssm list-command-invocations --command-id "$CMD_ID" --details # Muestra el último estado
           exit 1
