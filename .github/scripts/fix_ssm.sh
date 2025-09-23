@@ -3,6 +3,10 @@ set -e
 
 # Sanitiza INSTANCE_IDS (quita chars inválidos)
 INSTANCE_IDS_CLEAN="$(echo "$INSTANCE_IDS" | sed 's/[^a-zA-Z0-9-,]//g')"
+if [ -z "$INSTANCE_IDS_CLEAN" ]; then
+  echo "Error: INSTANCE_IDS no definido."
+  exit 2
+fi
 
 echo "Enviando comando SSM para verificar/crear deploy_from_s3.sh en instancias: $INSTANCE_IDS_CLEAN"
 
