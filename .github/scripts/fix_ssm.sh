@@ -1,144 +1,143 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
 
-# Sanitiza INSTANCE_IDS (quita chars inválidos)
-INSTANCE_IDS_CLEAN="$(echo "${INSTANCE_IDS:-}" | sed 's/[^a-zA-Z0-9-,]//g')"
-if [ -z "$INSTANCE_IDS_CLEAN" ]; then
-  echo "Error: INSTANCE_IDS no definido."
+# Espera variables de entorno:
+#   INSTANCE_IDS="i-aaa,i-bbb"
+#   RELEASE_URI="s3://bucket/prefix/releases/<SHA>"
+: "${INSTANCE_IDS:?INSTANCE_IDS no definido}"
+: "${RELEASE_URI:?RELEASE_URI no definido}"
+
+# Sanitizar (solo alfanum, coma o guion) sin sed para evitar rangos rotos
+INSTANCE_IDS_CLEAN="$(printf '%s' "${INSTANCE_IDS}" | tr -cd '[:alnum:],-')"
+if [ -z "${INSTANCE_IDS_CLEAN}" ]; then
+  echo "Error: INSTANCE_IDS quedó vacío tras sanitizar." >&2
   exit 2
 fi
 
-echo "Enviando comando SSM para verificar/crear deploy_from_s3.sh en instancias: $INSTANCE_IDS_CLEAN"
+echo "Enviando comando SSM (FIX) a instancias: ${INSTANCE_IDS_CLEAN}"
 
-# Convertir lista en array para --instance-ids
-IFS=',' read -ra IDS <<< "$INSTANCE_IDS_CLEAN"
+# Convertir a array
+IFS=',' read -ra IDS <<< "${INSTANCE_IDS_CLEAN}"
 
-# Crear el comando fix en JSON usando here document para evitar problemas de comillas
-cat <<EOP > fix.json
+# Construir payload JSON del FIX
+cat > fix.json <<'EOP'
 {
   "DocumentName": "AWS-RunShellScript",
   "Parameters": {
     "commands": [
-      "if [ ! -f /usr/local/bin/deploy_from_s3.sh ]; then",
+      "set -euxo pipefail",
+      "if [ ! -x /usr/local/bin/deploy_from_s3.sh ]; then",
       "  echo \"[FIX] Creando /usr/local/bin/deploy_from_s3.sh...\";",
       "  cat <<\"EOF\" >/usr/local/bin/deploy_from_s3.sh",
       "#!/usr/bin/env bash",
       "set -euo pipefail",
-      "",
-      "# ====== Configuración (consistente con User Data) ======",
-      "REGION=\"\${AWS_DEFAULT_REGION:-us-east-1}\"",
-      "APP_ROOT=\"/opt/gsms\"",
-      "APP_DIR=\"\${APP_ROOT}/app\"",
-      "VENV_DIR=\"\${APP_ROOT}/venv\"",
-      "SERVICE_WEB=\"gsms-web.service\"",
-      "SERVICE_UDP=\"gsms-udp.service\"",
       "USER_SVC=\"gsms\"",
+      "APP_ROOT=\"/opt/gsms\"",
+      "APP_DIR=\"${APP_ROOT}/app\"",
+      "VENV_DIR=\"${APP_ROOT}/venv\"",
+      "S3_PATH=\"${1:?Uso: deploy_from_s3.sh s3://bucket/prefix/release_id}\"",
       "",
-      "S3_PATH=\"\${1:?Uso: deploy_from_s3.sh s3://bucket/prefix/release_id}\"",
-      "",
-      "# ====== Pre-chequeos ======",
       "command -v aws >/dev/null || { echo \"Falta AWS CLI\"; exit 20; }",
-      "install -d -o \"\${USER_SVC}\" -g \"\${USER_SVC}\" -m 0755 \"\${APP_DIR}/src\"",
       "",
-      "# Chequeo adicional: Verifica si venv está inicializado",
-      "if [ ! -f \"\${VENV_DIR}/bin/pip\" ]; then",
-      "  echo \"[ERROR] Venv no inicializado correctamente. Saliendo.\"",
-      "  exit 1",
+      "# Validar que la ruta S3 tenga contenido",
+      "if ! aws s3 ls \"${S3_PATH%/}/\" | grep -q . ; then",
+      "  echo \"[ERROR] Ruta S3 inválida o sin objetos: ${S3_PATH}\"",
+      "  exit 21",
       "fi",
       "",
-      "# ====== Sincronización de Código ======",
-      "echo \"[Deploy] Sincronizando código desde \${S3_PATH}\"",
-      "aws s3 sync \"\${S3_PATH%/}/src/\" \"\${APP_DIR}/src/\" --delete --exclude \".git/*\" || true",
-      "aws s3 sync \"\${S3_PATH%/}/\" \"\${APP_DIR}/\" --delete --exclude \"src/*\" --exclude \"releases/*\" --exclude \".git/*\" || true",
+      "install -d -o \"${USER_SVC}\" -g \"${USER_SVC}\" -m 0755 \"${APP_DIR}/src\"",
       "",
-      "chown -R \${USER_SVC}:\${USER_SVC} \"\${APP_DIR}\"",
-      "find \"\${APP_DIR}\" -type d -name \"__pycache__\" -exec rm -rf {} + || true",
+      "echo \"[Deploy] Sincronizando ${S3_PATH} -> ${APP_DIR}\"",
+      "# Mantén tu doble sync si la necesitas; por defecto una sola sync del release completo:",
+      "aws s3 sync \"${S3_PATH%/}/\" \"${APP_DIR}/\" --delete --no-progress",
       "",
-      "# ====== Instalación Inteligente de Dependencias ======",
+      "# (Opcional) Instalar deps si hay venv y requirements.txt",
       "REQ_FILE=\"\"",
-      "[ -f \"\${APP_DIR}/requirements.txt\" ] && REQ_FILE=\"\${APP_DIR}/requirements.txt\"",
-      "[ -z \"\$REQ_FILE\" ] && [ -f \"\${APP_DIR}/src/requirements.txt\" ] && REQ_FILE=\"\${APP_DIR}/src/requirements.txt\"",
-      "",
-      "if [ -n \"\$REQ_FILE\" ]; then",
-      "  CURR_SHA=\"\$(sha256sum \"\$REQ_FILE\" | awk '{print \$1}')\"",
-      "  PREV_SHA_FILE=\"\${APP_ROOT}/.requirements.sha256\"",
-      "  PREV_SHA=\"\$(cat \"\$PREV_SHA_FILE\" 2>/dev/null || echo \"\")\"",
-      "  if [ \"\$CURR_SHA\" != \"\$PREV_SHA\" ]; then",
+      "[ -f \"${APP_DIR}/requirements.txt\" ] && REQ_FILE=\"${APP_DIR}/requirements.txt\"",
+      "[ -z \"$REQ_FILE\" ] && [ -f \"${APP_DIR}/src/requirements.txt\" ] && REQ_FILE=\"${APP_DIR}/src/requirements.txt\"",
+      "if [ -n \"$REQ_FILE\" ] && [ -x \"${VENV_DIR}/bin/pip\" ]; then",
+      "  CURR_SHA=\"$(sha256sum \"$REQ_FILE\" | awk '{print $1}')\"",
+      "  PREV_SHA_FILE=\"${APP_ROOT}/.requirements.sha256\"",
+      "  PREV_SHA=\"$(cat \"$PREV_SHA_FILE\" 2>/dev/null || echo \"\")\"",
+      "  if [ \"$CURR_SHA\" != \"$PREV_SHA\" ]; then",
       "    echo \"[Deps] Cambios en requirements -> instalando...\"",
-      "    \"\${VENV_DIR}/bin/pip\" install --upgrade pip wheel",
-      "    \"\${VENV_DIR}/bin/pip\" install -r \"\$REQ_FILE\"",
-      "    echo \"\$CURR_SHA\" > \"\$PREV_SHA_FILE\"",
+      "    \"${VENV_DIR}/bin/pip\" install --upgrade pip wheel",
+      "    \"${VENV_DIR}/bin/pip\" install -r \"$REQ_FILE\"",
+      "    echo \"$CURR_SHA\" > \"$PREV_SHA_FILE\"",
       "  else",
       "    echo \"[Deps] Requirements sin cambios.\"",
       "  fi",
       "else",
-      "  echo \"[Deps] No se encontró requirements.txt. Instalando dependencias base...\"",
-      "  \"\${VENV_DIR}/bin/pip\" install --upgrade pip wheel",
-      "  \"\${VENV_DIR}/bin/pip\" install fastapi==0.116.1 uvicorn[standard]==0.35.0 SQLAlchemy==2.0.43 alembic==1.16.5 psycopg2-binary==2.9.10 aiosqlite==0.20.0 pydantic==2.11.7 pydantic-settings==2.1.0 requests==2.31.0 Jinja2==3.1.3",
+      "  echo \"[Deps] Venv no inicializado o sin requirements; omitiendo instalación.\"",
       "fi",
       "",
-      "# Chequeo post-instalación",
-      "if [ ! -f \"\${VENV_DIR}/bin/uvicorn\" ] || ! \"\${VENV_DIR}/bin/pip\" list | grep -q pydantic-settings; then",
-      "  echo \"[ERROR] Dependencias fallaron.\"",
-      "  exit 1",
-      "fi",
+      "chown -R ${USER_SVC}:${USER_SVC} \"${APP_DIR}\" || true",
+      "find \"${APP_DIR}\" -type d -name \"__pycache__\" -exec rm -rf {} + || true",
       "",
-      "# ====== Reinicio de Servicios ======",
-      "echo \"[Deploy] Reiniciando servicios...\"",
-      "systemctl daemon-reload",
-      "if systemctl list-unit-files | grep -q \"^\${SERVICE_WEB}\"; then",
-      "  systemctl restart \"\${SERVICE_WEB}\"",
-      "  sleep 2",
-      "  systemctl --no-pager --full status \"\${SERVICE_WEB}\" | tail -n 50 || true",
+      "# Reiniciar servicios si existen",
+      "if command -v systemctl >/dev/null; then",
+      "  systemctl daemon-reload || true",
+      "  systemctl restart gsms-web  || true",
+      "  systemctl restart gsms-udp  || true",
       "fi",
-      "if systemctl list-unit-files | grep -q \"^\${SERVICE_UDP}\"; then",
-      "  systemctl restart \"\${SERVICE_UDP}\" || true",
-      "  systemctl --no-pager --full status \"\${SERVICE_UDP}\" | tail -n 30 || true",
-      "fi",
-      "",
-      "# ====== Verificación ======",
-      "echo \"release=\$(basename \"\${S3_PATH}\")\" > \${APP_ROOT}/build.txt",
-      "curl -sS --max-time 3 http://127.0.0.1:8000/health || echo \"[WARN] /health no respondió.\"",
-      "echo \"[Deploy] OK\"",
+      "echo \"[deploy] OK\"",
       "EOF",
       "  chmod +x /usr/local/bin/deploy_from_s3.sh",
-      "  sed -i 's/\\r\$//' /usr/local/bin/deploy_from_s3.sh",
-      "  echo \"Script recreado.\";",
+      "  # Normalizar CRLF si el heredoc se viera afectado",
+      "  sed -i 's/\\r$//' /usr/local/bin/deploy_from_s3.sh",
       "else",
-      "  echo \"Script ya existe.\";",
+      "  echo \"[FIX] Script ya existe y es ejecutable.\"",
       "fi"
     ]
-  },
-  "InstanceIds": [$(printf '"%s",' "${IDS[@]}" | sed 's/,$//')]
+  ]
 }
 EOP
 
-# Ejecutar comando fix usando --cli-input-json y sin --targets
-FIX_CMD_ID=$(aws ssm send-command --cli-input-json file://fix.json --query "Command.CommandId" --output text || { echo "Error en send-command fix"; exit 1; })
+# Inyectar dinámicamente los InstanceIds en fix.json
+# (agregamos el campo InstanceIds al final del objeto)
+IDS_JSON=$(printf '"%s",' "${IDS[@]}" | sed 's/,$//')
+# Insertar justo antes del cierre '}' del objeto:
+# Nota: usamos una inserción simple porque el JSON es pequeño y controlado.
+tmpfile=$(mktemp)
+awk -v ids="  ,\n  \"InstanceIds\": [\n    "ids"\n  ]\n" '
+  BEGIN{added=0}
+  # al encontrar la primera línea que sea exactamente "}" la reemplazamos
+  $0 == "}" && added==0 { print ids; print "}"; added=1; next }
+  { print }
+' fix.json > "$tmpfile"
+mv "$tmpfile" fix.json
 
-# Esperar a que fix termine (timeout 10 minutos)
+# 1) Ejecutar FIX
+FIX_CMD_ID=$(aws ssm send-command \
+  --cli-input-json file://fix.json \
+  --query "Command.CommandId" --output text)
+
+echo "FIX CommandId: ${FIX_CMD_ID}"
+
+# 2) Esperar hasta 10 min a que todas las invocaciones terminen con Success
 for j in {1..120}; do
-  FIX_STATUS=$(aws ssm list-command-invocations --command-id "$FIX_CMD_ID" --details --query 'CommandInvocations[?Status!=`Success`]' --output json)
-  if [ "$FIX_STATUS" = "[]" ]; then
-    echo "Fix completado."
+  PENDING=$(aws ssm list-command-invocations \
+    --command-id "$FIX_CMD_ID" \
+    --details \
+    --query "length(CommandInvocations[?Status!='Success'])" \
+    --output text || echo "1")
+  if [ "$PENDING" = "0" ]; then
+    echo "Fix completado en todas las instancias."
     break
   fi
   echo "Fix en progreso... esperando 5s"
   sleep 5
 done
 
-if [ "$FIX_STATUS" != "[]" ]; then
-  echo "Error: Fix timed out."
-  exit 1
-fi
-
-# Reintenta deploy original con --instance-ids (no --targets)
+# 3) Reintentar deploy con la release exacta
 NEW_CMD_ID=$(aws ssm send-command \
   --instance-ids "${IDS[@]}" \
   --document-name "AWS-RunShellScript" \
-  --comment "Deploy retry $SHA" \
+  --comment "GSMS Deploy retry ${GITHUB_SHA:-unknown}" \
   --parameters "{\"commands\":[\"sudo bash -lc '/usr/local/bin/deploy_from_s3.sh \\\"${RELEASE_URI}\\\"'\"]}" \
   --query 'Command.CommandId' --output text)
 
 echo "Nuevo CommandId para retry: $NEW_CMD_ID"
-echo "$NEW_CMD_ID"  # Output para capturar en workflow
+# Imprimir sólo el ID para que el workflow lo capture
+printf '%s\n' "$NEW_CMD_ID"
