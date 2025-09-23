@@ -209,16 +209,20 @@ jobs:
         id: precheck
         shell: bash
         run: |
-          set -euo pipefail
+          # Ojo: sin -u para no romper por variables posicionales en comandos embebidos
+          set -eo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
-          EXPECTED_SHA="$(sha256sum deploy_from_s3.sh | awk '{print $1}')"
 
+          # Hash local del archivo que acabamos de generar
+          EXPECTED_SHA="$(sha256sum deploy_from_s3.sh | cut -d' ' -f1)"
+
+          # Pedimos el hash remoto del script si existe
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
             --parameters "{\"commands\":[
               \"set -e\",
-              \"if [ -x /usr/local/bin/deploy_from_s3.sh ]; then sha256sum /usr/local/bin/deploy_from_s3.sh | awk '{print \\$1}'; else echo MISSING; exit 42; fi\"
+              \"if [ -x /usr/local/bin/deploy_from_s3.sh ]; then sha256sum /usr/local/bin/deploy_from_s3.sh | cut -d' ' -f1; else echo MISSING; exit 42; fi\"
             ]}" \
             --query "Command.CommandId" --output text)
 
@@ -241,6 +245,7 @@ jobs:
           else
             echo "precheck_result=ok" >> $GITHUB_OUTPUT
           fi
+
 
       - name: Sincronizar/instalar deploy_from_s3.sh (idempotente)
         shell: bash
