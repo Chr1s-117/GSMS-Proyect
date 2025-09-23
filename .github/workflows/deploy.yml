@@ -104,20 +104,16 @@ jobs:
           echo "instance_ids=${INSTANCE_IDS}" >> $GITHUB_OUTPUT
           echo "Instancias: ${INSTANCE_IDS}"
 
-      - name: Pre-chequeo - asegurar que existe /usr/local/bin/deploy_from_s3.sh
+      - name: Pre-chequeo: asegurar que existe /usr/local/bin/deploy_from_s3.sh
         id: precheck
         shell: bash
         run: |
           set -euo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
-          TARGETS=""
-          for id in "${IDS[@]}"; do
-            TARGETS="${TARGETS} Key=InstanceIds,Values=${id}"
-          done
 
           echo "Ejecutando prechequeo en instancias: ${{ steps.targets.outputs.instance_ids }}"
           CMD_ID=$(aws ssm send-command \
-            --targets ${TARGETS} \
+            --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
             --comment "Precheck deploy script" \
             --parameters '{"commands":["if [ -x /usr/local/bin/deploy_from_s3.sh ]; then echo OK; else echo MISSING; exit 42; fi"]}' \
@@ -145,6 +141,7 @@ jobs:
             echo "Precheck OK en todas las instancias."
           fi
 
+
       - name: Hacer ejecutable el fix y ejecutarlo si falta el script
         if: steps.precheck.outputs.precheck_result == 'missing'
         shell: bash
@@ -162,14 +159,10 @@ jobs:
         run: |
           set -euo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
-          TARGETS=""
-          for id in "${IDS[@]}"; do
-            TARGETS="${TARGETS} Key=InstanceIds,Values=${id}"
-          done
 
           echo "Enviando deploy a: ${{ steps.targets.outputs.instance_ids }}"
           CMD_ID=$(aws ssm send-command \
-            --targets ${TARGETS} \
+            --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
             --comment "GSMS Deploy ${GITHUB_SHA}" \
             --parameters "{\"commands\":[\"sudo bash -lc \\\"/usr/local/bin/deploy_from_s3.sh '${{ steps.meta.outputs.release_uri }}'\\\"\"]}" \
