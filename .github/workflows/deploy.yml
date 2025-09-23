@@ -322,6 +322,7 @@ jobs:
           set -euo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
 
+          # Construimos el unit y lo convertimos a una sola línea base64
           B64_UNIT=$(base64 -w0 <<'EOF_UNIT'
           [Unit]
           Description=GSMS Release Sync (pull latest from S3 using SSM param)
@@ -341,22 +342,23 @@ jobs:
           [Install]
           WantedBy=multi-user.target
           EOF_UNIT
-                    )
+          )
 
-                    CMD_ID=$(aws ssm send-command \
-                      --instance-ids "${IDS[@]}" \
-                      --document-name "AWS-RunShellScript" \
-                      --comment "Instalar unit gsms-release-sync" \
-                      --parameters "{\"commands\":[
-                        \"echo '${B64_UNIT}' | base64 -d > /etc/systemd/system/gsms-release-sync.service\",
-                        \"chmod 644 /etc/systemd/system/gsms-release-sync.service\",
-                        \"systemctl daemon-reload\",
-                        \"# Descomenta la siguiente línea si quieres que se ejecute en cada boot:\",
-                        " systemctl enable gsms-release-sync.service\"
-                      ]}" \
-                      --query "Command.CommandId" --output text)
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Instalar unit gsms-release-sync" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"echo '${B64_UNIT}' | base64 -d | sudo tee /etc/systemd/system/gsms-release-sync.service >/dev/null\",
+              \"sudo chmod 644 /etc/systemd/system/gsms-release-sync.service\",
+              \"sudo systemctl daemon-reload\",
+              \"sudo systemctl enable gsms-release-sync.service\"
+            ]}" \
+            --query "Command.CommandId" --output text)
 
-                    echo "CommandId: ${CMD_ID}"
+          echo "CommandId: ${CMD_ID}"
+
 
 
       - name: Preflight S3 desde EC2 (permisos/alcance)
