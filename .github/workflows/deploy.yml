@@ -104,7 +104,7 @@ jobs:
           echo "instance_ids=${INSTANCE_IDS}" >> $GITHUB_OUTPUT
           echo "Instancias: ${INSTANCE_IDS}"
 
-      - name: Pre-chequeo: asegurar que existe /usr/local/bin/deploy_from_s3.sh
+      - name: Pre-chequeo - asegurar que existe /usr/local/bin/deploy_from_s3.sh
         id: precheck
         shell: bash
         run: |
