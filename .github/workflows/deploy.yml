@@ -172,6 +172,39 @@ jobs:
           NEW_CMD_ID=$(bash .github/scripts/fix_ssm.sh)
           echo "Fix lanzado. CommandId: ${NEW_CMD_ID}"
 
+      - name: Preflight S3 desde EC2 (permisos/alcance)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_URI="${{ steps.meta.outputs.release_uri }}"
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "GSMS Preflight S3 read" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"echo Testing: ${RELEASE_URI}\",
+              \"aws s3 ls '${RELEASE_URI}/' --recursive > /tmp/ls.out 2>/tmp/ls.err || true\",
+              \"echo '--- ls.rc:' $?\",
+              \"echo '--- ls.err:'; sed -n '1,50p' /tmp/ls.err || true\",
+              \"echo '--- ls.out (head):'; sed -n '1,10p' /tmp/ls.out || true\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          # Espera simple
+          for id in "${IDS[@]}"; do
+            for i in {1..20}; do
+              STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo unknown)
+              [[ "$STATUS" == "Success" || "$STATUS" == "Cancelled" || "$STATUS" == "Failed" || "$STATUS" == "TimedOut" ]] && break
+              sleep 3
+            done
+            echo "---- Resultado en $id ----"
+            aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
+            echo "---------------------------"
+          done
+
+
       - name: Desplegar release en EC2 vía SSM
         id: deploy
         shell: bash
