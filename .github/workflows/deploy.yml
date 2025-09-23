@@ -75,8 +75,18 @@ jobs:
           command -v aws >/dev/null || { echo "Falta AWS CLI"; exit 20; }
 
           echo "[Deploy] Sincronizando código desde ${S3_PATH}"
-          aws s3 sync "${S3_PATH%/}/src/" "${APP_DIR}/src/" --delete --exclude ".git/*" || true
-          aws s3 sync "${S3_PATH%/}/"     "${APP_DIR}/"     --delete --exclude "src/*" --exclude "releases/*" --exclude ".git/*" || true
+          # Menos ruido para no romper el pipe de SSM:
+          aws s3 sync "${S3_PATH%/}/src/" "${APP_DIR}/src/" \
+            --delete --exclude ".git/*" --no-progress --only-show-errors \
+            > /tmp/gsms_sync_src.log 2>&1 || true
+          echo "[s3] src sync (primeras 50 líneas)"; sed -n '1,50p' /tmp/gsms_sync_src.log || true
+
+          aws s3 sync "${S3_PATH%/}/" "${APP_DIR}/" \
+            --delete --exclude "src/*" --exclude "releases/*" --exclude ".git/*" \
+            --no-progress --only-show-errors \
+            > /tmp/gsms_sync_root.log 2>&1 || true
+          echo "[s3] root sync (primeras 50 líneas)"; sed -n '1,50p' /tmp/gsms_sync_root.log || true
+
 
           chown -R ${USER_SVC}:${USER_SVC} "${APP_DIR}"
           find "${APP_DIR}" -type d -name "__pycache__" -exec rm -rf {} + || true
