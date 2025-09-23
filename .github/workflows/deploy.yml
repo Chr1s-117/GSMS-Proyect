@@ -62,6 +62,25 @@ jobs:
             --no-progress \
             --exclude ".git/*" \
             --exclude ".github/*"
+        
+      - name: Verificar que la release tenga contenido
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_URI="${{ steps.meta.outputs.release_uri }}"
+          echo "Listando contenido de ${RELEASE_URI}/ ..."
+          aws s3 ls "${RELEASE_URI}/" --recursive --human-readable --summarize || true
+
+          COUNT=$(aws s3 ls "${RELEASE_URI}/" --recursive | wc -l || echo 0)
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "::error::La release en S3 está vacía: ${RELEASE_URI}/"
+            echo "Diagnóstico local:"
+            echo "== ls -la =="
+            ls -la
+            echo "== git ls-files (máx 200) =="
+            git ls-files | head -n 200
+            exit 66
+          fi
 
       - name: Actualizar parámetro SSM con la release publicada
         shell: bash
