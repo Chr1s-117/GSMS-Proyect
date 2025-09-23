@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Project Metadata
     # --------------------------
     PROJECT_NAME: str = "GSMS"          # Name of the project
-    PROJECT_VERSION: str = "1.0.0"      # Current version
+    PROJECT_VERSION: str = "1.0.1"      # Current version
 
     # --------------------------
     # Application Runtime Parameters
