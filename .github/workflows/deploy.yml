@@ -316,6 +316,49 @@ jobs:
               --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
           done
 
+      - name: Instalar unit systemd gsms-release-sync.service
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+
+          B64_UNIT=$(base64 -w0 <<'EOF_UNIT'
+          [Unit]
+          Description=GSMS Release Sync (pull latest from S3 using SSM param)
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          Environment="AWS_DEFAULT_REGION=us-east-1"
+          ExecStart=/bin/bash -lc '\
+            set -euo pipefail; \
+            URI=$(aws ssm get-parameter --name /gsms/prod/app/package_url --query "Parameter.Value" --output text); \
+            echo "[gsms-release-sync] Deploying $URI"; \
+            /usr/local/bin/deploy_from_s3.sh "$URI" \
+          '
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF_UNIT
+                    )
+
+                    CMD_ID=$(aws ssm send-command \
+                      --instance-ids "${IDS[@]}" \
+                      --document-name "AWS-RunShellScript" \
+                      --comment "Instalar unit gsms-release-sync" \
+                      --parameters "{\"commands\":[
+                        \"echo '${B64_UNIT}' | base64 -d > /etc/systemd/system/gsms-release-sync.service\",
+                        \"chmod 644 /etc/systemd/system/gsms-release-sync.service\",
+                        \"systemctl daemon-reload\",
+                        \"# Descomenta la siguiente línea si quieres que se ejecute en cada boot:\",
+                        " systemctl enable gsms-release-sync.service\"
+                      ]}" \
+                      --query "Command.CommandId" --output text)
+
+                    echo "CommandId: ${CMD_ID}"
+
+
       - name: Preflight S3 desde EC2 (permisos/alcance)
         shell: bash
         run: |
