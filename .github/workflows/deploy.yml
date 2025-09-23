@@ -27,6 +27,9 @@ env:
   # ARN del rol que asume GitHub (defínelo como Repo Variable o Secret)
   AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
 
+  # <<< NUEVO >>> Controla si se reinician las instancias al final
+  REBOOT_AFTER_DEPLOY: "true"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -169,8 +172,6 @@ jobs:
         shell: bash
         run: |
           SHA="${GITHUB_SHA}"
-          # Opcional: usar versión corta para el folder (comenta si quieres el hash completo)
-          # SHA="$(echo "${GITHUB_SHA}" | cut -c1-12)"
           RELEASE_URI="s3://${S3_BUCKET}/${S3_PREFIX}/${RELEASES_PREFIX}/${SHA}"
           echo "sha=${SHA}" >> $GITHUB_OUTPUT
           echo "release_uri=${RELEASE_URI}" >> $GITHUB_OUTPUT
@@ -250,14 +251,11 @@ jobs:
         id: precheck
         shell: bash
         run: |
-          # Ojo: sin -u para no romper por variables posicionales en comandos embebidos
           set -eo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
 
-          # Hash local del archivo que acabamos de generar
           EXPECTED_SHA="$(sha256sum deploy_from_s3.sh | cut -d' ' -f1)"
 
-          # Pedimos el hash remoto del script si existe
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
@@ -286,7 +284,6 @@ jobs:
           else
             echo "precheck_result=ok" >> $GITHUB_OUTPUT
           fi
-
 
       - name: Sincronizar/instalar deploy_from_s3.sh (idempotente)
         shell: bash
@@ -339,7 +336,6 @@ jobs:
             ]}" \
             --query "Command.CommandId" --output text)
 
-          # Espera simple
           for id in "${IDS[@]}"; do
             for i in {1..20}; do
               STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo unknown)
@@ -350,7 +346,6 @@ jobs:
             aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
             echo "---------------------------"
           done
-
 
       - name: Desplegar release en EC2 vía SSM
         id: deploy
@@ -406,6 +401,63 @@ jobs:
             echo "ERROR: Alguna instancia falló en el despliegue."
             exit 1
           fi
+
+      # ----------------------- NUEVA SECCIÓN: REINICIO -----------------------
+      - name: Reboot instances (optional)
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          echo "Reiniciando: ${IDS[*]}"
+          aws ec2 reboot-instances --instance-ids "${IDS[@]}"
+
+      - name: Wait for instances to pass status checks
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          echo "Esperando a que las instancias pasen instance-status-ok..."
+          # Espera a que arranquen y pasen los 2 checks (system & instance)
+          aws ec2 wait instance-status-ok --instance-ids "${IDS[@]}"
+          echo "Checks OK"
+
+      - name: Post-reboot healthcheck via SSM
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          echo "Ejecutando healthcheck /health en cada instancia..."
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "GSMS post-reboot healthcheck" \
+            --parameters "{\"commands\":[
+              \"for i in {1..20}; do curl -fsS --max-time 3 http://127.0.0.1:8000/health && exit 0; sleep 3; done; echo HEALTHCHECK_FAILED; exit 1\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          FAIL=0
+          for id in "${IDS[@]}"; do
+            for i in {1..30}; do
+              STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo "Unknown")
+              if [[ "$STATUS" == "Success" ]]; then
+                echo "Health OK en $id"
+                break
+              fi
+              if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+                echo "Health FAILED en $id"
+                FAIL=1
+                break
+              fi
+              sleep 5
+            done
+          done
+          [[ $FAIL -eq 0 ]]
+
+      # ----------------------------------------------------------------------
 
       - name: Fin
         run: echo "Despliegue completado correctamente en todas las instancias."
