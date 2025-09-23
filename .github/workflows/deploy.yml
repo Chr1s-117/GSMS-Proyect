@@ -52,14 +52,22 @@ jobs:
 
           S3_PATH="${1:?Uso: deploy_from_s3.sh s3://bucket/prefix/release_id}"
 
-          # --- Asegurar usuario/grupo y estructura base ---
-          if ! id -u "$USER_SVC" >/dev/null 2>&1; then
-            # usuario de sistema sin shell de login ni home obligatorio
-            useradd --system --no-create-home --shell /usr/sbin/nologin "$USER_SVC"
+          # Asegurar usuario/grupo o hacer fallback a root
+          if ! id -u "${USER_SVC}" >/dev/null 2>&1; then
+            echo "[WARN] Usuario ${USER_SVC} no existe; usando root para propietarios."
+            USER_SVC="root"
           fi
 
-          install -d -m 0755 "${APP_DIR}/src" "${APP_ROOT}" "${VENV_DIR}" || true
-          chown -R "${USER_SVC}:${USER_SVC}" "${APP_ROOT}" || true
+          # Asegurar estructura y venv
+          install -d -m 0755 "${APP_DIR}/src"
+          chown -R ${USER_SVC}:${USER_SVC} "${APP_ROOT}" || true
+
+          if [ ! -x "${VENV_DIR}/bin/python" ]; then
+            echo "[Venv] Creando venv en ${VENV_DIR} ..."
+            python3 -m venv "${VENV_DIR}"
+          fi
+          PY="${VENV_DIR}/bin/python"
+          PIP="${VENV_DIR}/bin/pip"
 
           # ---- Chequeo fino de S3 (distingue sin-permisos vs. vacío) ----
           if ! aws s3 ls "${S3_PATH%/}/" --recursive >/tmp/gsms_ls.out 2>/tmp/gsms_ls.err ; then
@@ -74,19 +82,21 @@ jobs:
 
           command -v aws >/dev/null || { echo "Falta AWS CLI"; exit 20; }
 
+          # Menos ruido para no romper el pipe de SSM
+          LOG_DIR="/var/log/gsms-deploy"
+          install -d -m 0755 "${LOG_DIR}" || true
+
           echo "[Deploy] Sincronizando código desde ${S3_PATH}"
-          # Menos ruido para no romper el pipe de SSM:
           aws s3 sync "${S3_PATH%/}/src/" "${APP_DIR}/src/" \
             --delete --exclude ".git/*" --no-progress --only-show-errors \
-            > /tmp/gsms_sync_src.log 2>&1 || true
-          echo "[s3] src sync (primeras 50 líneas)"; sed -n '1,50p' /tmp/gsms_sync_src.log || true
+            > "${LOG_DIR}/s3_sync_src.log" 2>&1 || true
+          echo "[s3] src sync (primeras 50 líneas)"; sed -n '1,50p' "${LOG_DIR}/s3_sync_src.log" || true
 
           aws s3 sync "${S3_PATH%/}/" "${APP_DIR}/" \
             --delete --exclude "src/*" --exclude "releases/*" --exclude ".git/*" \
             --no-progress --only-show-errors \
-            > /tmp/gsms_sync_root.log 2>&1 || true
-          echo "[s3] root sync (primeras 50 líneas)"; sed -n '1,50p' /tmp/gsms_sync_root.log || true
-
+            > "${LOG_DIR}/s3_sync_root.log" 2>&1 || true
+          echo "[s3] root sync (primeras 50 líneas)"; sed -n '1,50p' "${LOG_DIR}/s3_sync_root.log" || true
 
           chown -R ${USER_SVC}:${USER_SVC} "${APP_DIR}"
           find "${APP_DIR}" -type d -name "__pycache__" -exec rm -rf {} + || true
@@ -95,30 +105,40 @@ jobs:
           [ -f "${APP_DIR}/requirements.txt" ] && REQ_FILE="${APP_DIR}/requirements.txt"
           [ -z "$REQ_FILE" ] && [ -f "${APP_DIR}/src/requirements.txt" ] && REQ_FILE="${APP_DIR}/src/requirements.txt"
 
-          if [ ! -x "${VENV_DIR}/bin/python" ]; then
-            python3 -m venv "${VENV_DIR}"
-          fi
-          "${VENV_DIR}/bin/pip" install --upgrade pip wheel
+          # Siempre actualizar pip/wheel en silencio
+          ${PY} -m pip install --upgrade --disable-pip-version-check -q pip wheel >> "${LOG_DIR}/pip_bootstrap.log" 2>&1 || true
 
           if [ -n "$REQ_FILE" ]; then
             CURR_SHA="$(sha256sum "$REQ_FILE" | awk '{print $1}')"
             PREV_SHA_FILE="${APP_ROOT}/.requirements.sha256"
             PREV_SHA="$(cat "$PREV_SHA_FILE" 2>/dev/null || echo "")"
+
             if [ "$CURR_SHA" != "$PREV_SHA" ]; then
               echo "[Deps] Cambios en requirements -> instalando..."
-              "${VENV_DIR}/bin/pip" install -r "$REQ_FILE"
+              ${PIP} install --no-input --disable-pip-version-check -r "$REQ_FILE" \
+                >> "${LOG_DIR}/pip_install.log" 2>&1
               echo "$CURR_SHA" > "$PREV_SHA_FILE"
             else
               echo "[Deps] Requirements sin cambios."
             fi
           else
             echo "[Deps] No se encontró requirements.txt. Instalando base..."
-            "${VENV_DIR}/bin/pip" install fastapi==0.116.1 uvicorn[standard]==0.35.0 SQLAlchemy==2.0.43 alembic==1.16.5 psycopg2-binary==2.9.10 aiosqlite==0.20.0 pydantic==2.11.7 pydantic-settings==2.1.0 requests==2.31.0 Jinja2==3.1.3
+            ${PIP} install --no-input --disable-pip-version-check \
+              fastapi==0.116.1 "uvicorn[standard]"==0.35.0 SQLAlchemy==2.0.43 alembic==1.16.5 \
+              psycopg2-binary==2.9.10 aiosqlite==0.20.0 pydantic==2.11.7 pydantic-settings==2.1.0 \
+              requests==2.31.0 Jinja2==3.1.3 >> "${LOG_DIR}/pip_install.log" 2>&1
           fi
 
-          if [ ! -f "${VENV_DIR}/bin/uvicorn" ] || ! "${VENV_DIR}/bin/pip" list | grep -q pydantic-settings; then
-            echo "[ERROR] Dependencias fallaron."
-            exit 1
+          # Mostrar solo resumen de pip
+          echo "[pip] bootstrap (últimas 40 líneas)"; tail -n 40 "${LOG_DIR}/pip_bootstrap.log" 2>/dev/null || true
+          echo "[pip] install   (últimas 80 líneas)"; tail -n 80 "${LOG_DIR}/pip_install.log" 2>/dev/null || true
+
+          # Verificación clara de dependencias
+          if [ ! -x "${VENV_DIR}/bin/uvicorn" ]; then
+            echo "[ERROR] uvicorn no se instaló en ${VENV_DIR}/bin"; exit 1
+          fi
+          if ! ${PIP} show pydantic-settings >/dev/null 2>&1; then
+            echo "[ERROR] pydantic-settings no está instalado"; exit 1
           fi
 
           echo "[Deploy] Reiniciando servicios..."
@@ -134,7 +154,7 @@ jobs:
           fi
 
           echo "release=$(basename "${S3_PATH}")" > ${APP_ROOT}/build.txt
-          curl -sS --max-time 3 http://127.0.0.1:8000/health || echo "[WARN] /health no respondió."
+          curl -sS --max-time 3 http://127.0.0.1:8000/health >/dev/null || echo "[WARN] /health no respondió."
           echo "[Deploy] OK"
           EOF_SCRIPT
 
