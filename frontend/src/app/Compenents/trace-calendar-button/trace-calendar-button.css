@@ -1,0 +1,32 @@
+.trace-calendar-button {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background-color: #e6e6e6;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.trace-calendar-button:hover {
+  background-color: #dcdcdc;
+}
+
+.trace-calendar-button.active {
+  background-color: #4caf50; /* Verde */
+  border-color: #4caf50;
+}
+
+.trace-calendar-button.inactive {
+  background-color: #f44336; /* Rojo */
+  border-color: #f44336;
+}
+
+.trace-calendar-button .icon {
+  width: 18px;
+  height: 18px;
+}

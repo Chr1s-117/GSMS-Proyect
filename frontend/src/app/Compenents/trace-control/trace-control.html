@@ -1,0 +1,22 @@
+<div class="trace-control">
+  <h3>Control de Trayectoria</h3>
+
+  <div class="user-box">
+    <div class="user-header">Default user</div>
+
+    <div class="button-container">
+      <app-trace-toggle-button (toggled)="onTraceToggled($event)"></app-trace-toggle-button>
+      <app-trace-calendar-button (toggled)="toggleCalendarVisibility($event)"></app-trace-calendar-button>
+    </div>
+
+    <div *ngIf="isCalendarVisible" class="calendar-container">
+      <app-trace-calendar
+        [startDate]="selectedStartDate"
+        [endDate]="selectedEndDate"
+        [minDate]="minCalendarDate"
+        [maxDate]="maxCalendarDate"
+        (dateRangeSelected)="onDateRangeSelected($event)">
+      </app-trace-calendar>
+    </div>
+  </div>
+</div>

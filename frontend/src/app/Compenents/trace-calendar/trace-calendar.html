@@ -1,0 +1,56 @@
+<div class="trace-calendar">
+  <h4>Seleccionar rango de fecha y hora</h4>
+
+  <!-- Desde -->
+  <div class="calendar-row">
+    <mat-form-field appearance="outline" class="calendar-field">
+      <mat-label>Desde (fecha)</mat-label>
+      <input matInput
+             [matDatepicker]="pickerStart"
+             [(ngModel)]="tempStartDate"
+             [min]="uiMinDate"
+             [max]="uiMaxDate"
+             [ngModelOptions]="{standalone:true}"
+             readonly>
+      <mat-datepicker-toggle matSuffix [for]="pickerStart"></mat-datepicker-toggle>
+      <mat-datepicker #pickerStart></mat-datepicker>
+    </mat-form-field>
+
+    <input type="time"
+           [(ngModel)]="tempStartTime"
+           [ngModelOptions]="{standalone:true}"
+           class="time-input"
+           onkeydown="return false"
+           onpaste="return false">
+  </div>
+
+  <!-- Hasta -->
+  <div class="calendar-row">
+    <mat-form-field appearance="outline" class="calendar-field">
+      <mat-label>Hasta (fecha)</mat-label>
+      <input matInput
+             [matDatepicker]="pickerEnd"
+             [(ngModel)]="tempEndDate"
+             [min]="minDate"
+             [max]="uiMaxDate"
+             [ngModelOptions]="{standalone:true}"
+             readonly>
+      <mat-datepicker-toggle matSuffix [for]="pickerEnd"></mat-datepicker-toggle>
+      <mat-datepicker #pickerEnd></mat-datepicker>
+    </mat-form-field>
+
+    <input type="time"
+           [(ngModel)]="tempEndTime"
+           [ngModelOptions]="{standalone:true}"
+           class="time-input"
+           onkeydown="return false"
+           onpaste="return false">
+  </div>
+
+  <!-- Botón de confirmación -->
+  <div class="calendar-actions">
+    <button mat-raised-button color="primary" (click)="confirmRange()">
+      Confirmar
+    </button>
+  </div>
+</div>

@@ -1,0 +1,16 @@
+/* src/styles.css */
+/* You can add global styles to this file, and also import other style files */
+
+/* Global background for the entire Angular app */
+html, body {
+  height: 100%;           /* Ensure full height */
+  margin: 0;              /* Remove default margin */
+  background: linear-gradient(135deg, #ffffff, #ffffff); /* Green-cyan background */
+  font-family: Arial, sans-serif; /* Optional clean font */
+}
+
+/* make sure app-root fills full height */
+app-root {
+  display: block;
+  min-height: 100%;
+}

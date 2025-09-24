@@ -1,6 +1,7 @@
 # src/Controller/Routes/gps_datas.py
 
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 from src.Controller.deps import get_DB
@@ -17,6 +18,73 @@ from src.Schemas import gps_data as gps_data_schema
 # -------------------------------------------------------------------
 
 router = APIRouter()
+
+# ---------- SPECIAL GET ROUTES ----------
+
+@router.get("/last", response_model=gps_data_schema.GpsData_get)
+def get_last_gps_row(DB: Session = Depends(get_DB)):
+    """
+    Retrieve the most recent GPS data record from the database.
+
+    Args:
+        DB (Session, optional): SQLAlchemy database session injected via Depends(get_DB).
+
+    Raises:
+        HTTPException(404): If no GPS data exists in the database.
+
+    Returns:
+        GpsData_get: The most recent GPS record, serialized using Pydantic.
+    """
+    last_row = gps_data_repo.get_last_gps_row(DB, include_id=True)  
+    if last_row is None:
+        raise HTTPException(status_code=404, detail="No GPS data found")
+    return last_row
+
+@router.get("/oldest", response_model=gps_data_schema.GpsData_get)
+def get_oldest_gps_row(DB: Session = Depends(get_DB)):
+    """
+    Retrieve the oldest GPS data record from the database.
+
+    Args:
+        DB (Session, optional): SQLAlchemy database session injected via Depends(get_DB).
+
+    Raises:
+        HTTPException(404): If no GPS data exists in the database.
+
+    Returns:
+        GpsData_get: The oldest GPS record, serialized using Pydantic.
+    """
+    oldest_row = gps_data_repo.get_oldest_gps_row(DB, include_id=True)  
+    if oldest_row is None:
+        raise HTTPException(status_code=404, detail="No GPS data found")
+    return oldest_row
+
+@router.get("/range", response_model=List[gps_data_schema.GpsData_get])
+def get_gps_data_range(
+    start: datetime = Query(..., description="Start timestamp in ISO-8601 UTC"),
+    end: datetime = Query(..., description="End timestamp in ISO-8601 UTC"),
+    DB: Session = Depends(get_DB)
+):
+    """
+    Retrieve all GPS data records within a specified timestamp range.
+
+    Args:
+        start (datetime): Start timestamp in ISO-8601 UTC format.
+        end (datetime): End timestamp in ISO-8601 UTC format.
+        DB (Session, optional): SQLAlchemy database session injected via Depends(get_DB).
+
+    Raises:
+        HTTPException(404): If no GPS data exists within the given range.
+
+    Returns:
+        List[GpsData_get]: A list of GPS records within the range, serialized using Pydantic.
+    """
+    data = gps_data_repo.get_gps_data_in_range(DB, start, end, include_id=True)
+    if not data:
+        raise HTTPException(status_code=404, detail="No GPS data found in range")
+    return data
+
+# ---------- STANDARD CRUD ROUTES ----------
 
 @router.get("/", response_model=List[gps_data_schema.GpsData_get])
 def read_gps_data(DB: Session = Depends(get_DB)):

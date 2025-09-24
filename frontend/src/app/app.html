@@ -1,0 +1,35 @@
+<!-- // src/app/app.html
+     Root Application Template
+     Defines the primary structure of the Angular application:
+     - Title
+     - Left column (GPS Panel + Trace Control)
+     - Right column (GPS Map)
+     - Router Outlet
+  -->
+
+<div class="app-container">
+
+  <!-- Application Title -->
+  <h1>{{ title() }}</h1>
+
+  <!-- Main Layout: left column (panels) + right column (map) -->
+  <div class="gps-layout">
+    
+    <!-- Left Column -->
+    <div class="left-column">
+      <!-- GPS Data Panel -->
+      <app-gps-panel></app-gps-panel>
+
+      <!-- Trace Control Panel, emits trace visibility toggle -->
+      <app-trace-control 
+        (traceVisibilityChanged)="onToggleTrace($event)">
+      </app-trace-control>
+    </div>
+
+    <!-- Right Column: GPS Map (receives trace visibility as Input) -->
+    <app-gps-map [showTrace]="showTrace"></app-gps-map>
+  </div>
+
+  <!-- Angular Router Outlet for navigation -->
+  <router-outlet></router-outlet>
+</div>

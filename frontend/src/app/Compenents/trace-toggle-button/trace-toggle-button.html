@@ -1,0 +1,18 @@
+<!-- 
+  TraceToggleButtonComponent Template
+
+  Renders a button with dynamic label and style:
+  - Label changes depending on `isActive` state:
+    - "Mostrar Trayectoria" when inactive.
+    - "Ocultar Trayectoria" when active.
+  - Style changes via `ngClass` to reflect active/inactive states.
+
+  Events:
+  - (click): Calls `onClick()` to toggle state and emit an event.
+-->
+<button
+  class="trace-toggle-button"
+  [ngClass]="isActive ? 'active' : 'inactive'"
+  (click)="onClick()">
+  <img src="/route.ico" alt="Route" class="icon" />
+</button>

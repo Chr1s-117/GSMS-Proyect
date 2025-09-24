@@ -1,0 +1,39 @@
+.trace-calendar {
+  padding: 10px;
+  font-size: 14px;
+}
+
+.calendar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.calendar-field {
+  flex: 2;
+}
+
+.time-input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+  background-color: #fafafa;
+  cursor: pointer;
+  min-width: 90px;
+  text-align: center;
+}
+
+.time-input:focus {
+  outline: none;
+  border-color: #3f51b5;
+  box-shadow: 0 0 2px rgba(63, 81, 181, 0.6);
+}
+
+.calendar-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}

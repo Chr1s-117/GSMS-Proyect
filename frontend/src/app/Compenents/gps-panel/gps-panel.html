@@ -1,0 +1,16 @@
+<div class="gps-panel">
+  <h3>GPS Data</h3>
+
+  <!-- Reactive block using Angular 20 signals syntax -->
+  @if (gpsData(); as data) {
+    <!-- Display latest GPS data -->
+    <p><strong>Latitude:</strong> {{ data.Latitude }}</p>
+    <p><strong>Longitude:</strong> {{ data.Longitude }}</p>
+    <p><strong>Altitude:</strong> {{ data.Altitude }}</p>
+    <p><strong>Accuracy:</strong> {{ data.Accuracy }}</p>
+    <p><strong>Timestamp:</strong> {{ data.Timestamp }}</p>
+  } @else {
+    <!-- Display when no GPS data has been received yet -->
+    <p>No GPS data yet...</p>
+  }
+</div>

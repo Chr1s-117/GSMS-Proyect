@@ -1,8 +1,11 @@
 # src/Core/log_ws.py
 
 from typing import Dict, Any
-from .wsBase import WebSocketManager
 from fastapi import WebSocket
+from src.DB.session import SessionLocal
+from .wsBase import WebSocketManager
+from src.Repositories.gps_data import get_oldest_gps_row
+import json
 
 class LogWebSocketManager(WebSocketManager):
     """
@@ -26,7 +29,7 @@ class LogWebSocketManager(WebSocketManager):
 
     async def handle_message(self, ws: WebSocket, message: str):
         """
-        Handle incoming messages from log WebSocket clients.
+        Handle incoming messages from GPS WebSocket clients.
 
         Args:
             ws: WebSocket connection that sent the message.
@@ -34,11 +37,10 @@ class LogWebSocketManager(WebSocketManager):
 
         Notes:
             - Currently, this method only prints the received message.
-            - Future improvements may include filtering by log level,
-              selective client subscriptions, or remote control commands.
+            - Future improvements may include handling commands, update frequency, client preferences, etc.
         """
-        print(f"[LOG-WS] Received message: {message}")
-        # TODO: Implement custom logic if required
+        print(f"[GPS-WS] Received message: {message}")
+        # Future: handle commands, update frequency, client preferences, etc.
 
 
 # Dedicated instance of LogWebSocketManager for broadcasting logs

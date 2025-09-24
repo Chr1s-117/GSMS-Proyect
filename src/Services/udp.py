@@ -18,7 +18,6 @@ Key features:
 import socket
 import json
 import threading
-import os
 from datetime import datetime, timezone
 from typing import Dict, Any
 from pydantic import ValidationError
@@ -30,7 +29,7 @@ from src.Core import log_ws
 # --------------------------
 # UDP Server Configuration
 # --------------------------
-UDP_PORT = int(os.getenv("UDP_PORT", "9001"))  # Use environment variable if set
+UDP_PORT = 9001  # Use environment variable if set
 BUFFER_SIZE = 65535  # Maximum safe UDP packet size
 
 # Canonical keys expected in the GPS schema
@@ -67,19 +66,14 @@ def _coerce_number(value: Any):
     Handles empty strings, 'null', and both period/comma decimal separators.
     Returns None for unconvertible values.
     """
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return value
+    if value is None: return None
+    if isinstance(value, (int, float)): return value
     if isinstance(value, str):
         v = value.strip()
-        if v == "" or v.lower() == "null":
-            return None
+        if v == "" or v.lower() == "null": return None
         v = v.replace(",", ".")
-        try:
-            return float(v)
-        except:
-            return value
+        try: return float(v)
+        except: return value
     return value
 
 def _normalize_payload(raw_payload: Any) -> Dict[str, Any]:
@@ -183,21 +177,23 @@ def udp_server():
             # Insert into database if not a duplicate
             try:
                 with SessionLocal() as db:
-                    last_row = get_last_gps_row(db)
+                    last_row = get_last_gps_row(db)  # dict | None
+                    incoming_dict = gps_data.dict()
                     is_duplicate = last_row and all(
-                        getattr(last_row, k) == getattr(gps_data, k)
+                        last_row.get(k) == incoming_dict.get(k)
                         for k in _ALLOWED_KEYS
                     )
 
                     # Centralized logging
-                    log_ws.log_from_thread(f"[UDP] from {sender_ip} get: {gps_data}", msg_type="log")
+                    log_ws.log_from_thread(f"[UDP] from {sender_ip} get: {incoming_dict}", msg_type="log")
 
                     if is_duplicate:
                         print(f"[UDP] Duplicate data from {sender_ip}, discarded.")
                         continue
 
                     # Insert new GPS row
-                    _ = created_gps_data(db, gps_data)
+                    new_row = created_gps_data(db, gps_data)
+                    log_ws.log_from_thread(f"[UDP] inserted row: {new_row}", msg_type="log")
 
             except Exception as db_e:
                 log_ws.log_from_thread(f"[UDP] DB insert error from {sender_ip}: {db_e} | payload: {normalized}", msg_type="error")
@@ -217,5 +213,5 @@ def start_udp_server() -> threading.Thread:
     """
     thread = threading.Thread(target=udp_server, daemon=True, name="UDP-Server")
     thread.start()
-    log_ws.log_from_thread("[UDP] UDP server started", msg_type="log")
+    print("[UDP] Background thread started")
     return thread

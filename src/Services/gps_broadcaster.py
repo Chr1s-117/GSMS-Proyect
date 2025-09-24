@@ -13,63 +13,10 @@ Responsibilities:
 
 import threading
 from typing import Any, Dict, Optional
-from datetime import datetime, timezone
-from src.Repositories import gps_data as gps_repo
+from src.Repositories.gps_data import get_last_gps_row
 from src.DB.session import SessionLocal
-from src.Schemas.gps_data import GpsData_get
 from src.Core import log_ws
 from src.Core import gps_ws
-
-
-def _timestamp_to_iso(ts: Optional[datetime]) -> Optional[str]:
-    """
-    Convert a UTC-aware datetime object to an ISO 8601 string with 'Z' suffix.
-
-    Args:
-        ts (Optional[datetime]): UTC-aware datetime object.
-
-    Returns:
-        Optional[str]: ISO 8601 formatted string, or None if input is invalid.
-    """
-    if ts is None:
-        return None
-    if isinstance(ts, datetime):
-        return ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    return None
-
-
-def fetch_latest_gps_data() -> Optional[Dict[str, Any]]:
-    """
-    Fetch the most recent GPS row from the database.
-
-    - Converts the database model to a dictionary suitable for WebSocket broadcast.
-    - Removes internal database identifiers.
-    - Converts the timestamp to ISO 8601 format.
-
-    Returns:
-        Optional[Dict[str, Any]]: Latest GPS data dictionary, or None if no data is available.
-    """
-    try:
-        with SessionLocal() as db:
-            last_row = gps_repo.get_last_gps_row(db)
-            if last_row is None:
-                return None
-
-            # Validate and serialize using Pydantic schema
-            pydantic_row = GpsData_get.model_validate(last_row)
-            data = pydantic_row.model_dump()
-
-            # Remove internal database ID
-            data.pop("id", None)
-            data["Timestamp"] = _timestamp_to_iso(data.get("Timestamp"))
-
-            return data
-
-    except Exception as ex:
-        # Log database retrieval errors from the thread context
-        log_ws.log_from_thread(f"[GPS-BROADCAST] Error fetching latest GPS data: {ex}", msg_type="error")
-        return None
-
 
 def broadcast_loop():
     """
@@ -85,7 +32,9 @@ def broadcast_loop():
 
     while True:
         try:
-            data_to_send = fetch_latest_gps_data()
+            with SessionLocal() as db:
+                # get_last_gps_row already returns dict | None, serialized with ISO timestamp and no ID
+                data_to_send = get_last_gps_row(db)
 
             if data_to_send is not None:
                 # Only send if the data has changed
