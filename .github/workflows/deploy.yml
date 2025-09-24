@@ -316,13 +316,13 @@ jobs:
               --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
           done
 
-      # === A2: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000) ===
       - name: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000)
         shell: bash
         run: |
           set -euo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
 
+          # Unit con PYTHONPATH y un chequeo previo de import
           read -r -d '' UNIT <<'EOFU'
           [Unit]
           Description=GSMS Web API (Uvicorn)
@@ -330,46 +330,72 @@ jobs:
           Wants=network-online.target
 
           [Service]
+          # Asegúrate de que el usuario exista (lo creamos antes vía SSM)
           User=gsms
           Group=gsms
           WorkingDirectory=/opt/gsms/app
+          # Si no existe el archivo, no falla por el prefijo "-"
           EnvironmentFile=-/etc/systemd/system/gsms-web.service.d/env.conf
+          # Hace que "src.*" sea importable desde /opt/gsms/app
+          Environment=PYTHONPATH=/opt/gsms/app
+
+          # Verificación previa: que /opt/gsms/venv exista y que src.main:app sea importable
+          ExecStartPre=/bin/bash -lc 'test -x /opt/gsms/venv/bin/python'
+          ExecStartPre=/opt/gsms/venv/bin/python -c "import sys; sys.path.insert(0,'/opt/gsms/app'); import importlib; m=importlib.import_module('src.main'); assert hasattr(m,'app'), 'Falta variable app en src.main'"
+
+          # Uvicorn sirviendo en 0.0.0.0:8000
           ExecStart=/opt/gsms/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+
           Restart=always
           RestartSec=3
+
+          # Logs legibles en journalctl -u gsms-web
+          StandardOutput=journal
+          StandardError=journal
 
           [Install]
           WantedBy=multi-user.target
           EOFU
 
-          # Opcional: drop-in de variables mínimas (elimina o ajusta si ya manejas envs por otra vía)
+          # Drop-in opcional de variables de entorno (ajústalo a tu realidad)
           read -r -d '' ENVCONF <<'EOFE'
           APP_ENV=prod
+          # Ejemplo:
           # GSMS_DB_URL=postgresql+psycopg2://user:pass@dbhost:5432/gsms
           EOFE
 
           B64_UNIT=$(printf "%s" "$UNIT" | base64 -w0)
           B64_ENV=$(printf "%s" "$ENVCONF" | base64 -w0)
 
+          # Ejecuta en cada instancia por SSM
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
             --comment "Instalar/actualizar gsms-web.service a 0.0.0.0:8000" \
             --parameters "{\"commands\":[
               \"set -e\",
-              \"install -d -m 0755 /etc/systemd/system/gsms-web.service.d\",
-              \"echo '${B64_UNIT}' | base64 -d > /etc/systemd/system/gsms-web.service\",
-              \"echo '${B64_ENV}'  | base64 -d > /etc/systemd/system/gsms-web.service.d/env.conf\",
-              \"chown root:root /etc/systemd/system/gsms-web.service /etc/systemd/system/gsms-web.service.d/env.conf\",
-              \"chmod 644 /etc/systemd/system/gsms-web.service\",
-              \"chmod 640 /etc/systemd/system/gsms-web.service.d/env.conf\",
-              \"systemctl daemon-reload\",
-              \"systemctl enable --now gsms-web.service\",
-              \"systemctl status gsms-web.service --no-pager -l | tail -n 80 || true\"
+              # 1) Asegurar usuario/grupo gsms y permisos
+              \"id -u gsms >/dev/null 2>&1 || sudo useradd --system --home /opt/gsms --shell /usr/sbin/nologin gsms\",
+              \"sudo install -d -m 0755 /opt/gsms/app /etc/systemd/system/gsms-web.service.d\",
+              \"sudo chown -R gsms:gsms /opt/gsms || true\",
+
+              # 2) Instalar unit + drop-in env
+              \"echo '${B64_UNIT}' | base64 -d | sudo tee /etc/systemd/system/gsms-web.service >/dev/null\",
+              \"echo '${B64_ENV}'  | base64 -d | sudo tee /etc/systemd/system/gsms-web.service.d/env.conf >/dev/null\",
+              \"sudo chown root:root /etc/systemd/system/gsms-web.service /etc/systemd/system/gsms-web.service.d/env.conf\",
+              \"sudo chmod 644 /etc/systemd/system/gsms-web.service\",
+              \"sudo chmod 640 /etc/systemd/system/gsms-web.service.d/env.conf\",
+              \"sudo systemctl daemon-reload\",
+              \"sudo systemctl enable gsms-web.service\",
+
+              # 3) (Re)arrancar y sacar diagnóstico útil si falla
+              \"if ! sudo systemctl restart gsms-web.service; then echo '--- systemctl status ---'; sudo systemctl --no-pager --full status gsms-web.service || true; echo '--- journalctl tail ---'; sudo journalctl -u gsms-web --no-pager -n 120 || true; exit 1; fi\",
+              \"sudo systemctl --no-pager --full status gsms-web.service | tail -n 80 || true\"
             ]}" \
             --query "Command.CommandId" --output text)
 
           echo "CommandId: ${CMD_ID}"
+
 
       - name: Instalar unit systemd gsms-release-sync.service
         shell: bash
