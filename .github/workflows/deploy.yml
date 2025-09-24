@@ -316,14 +316,13 @@ jobs:
               --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
           done
 
-      # NUEVO paso: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000)
       - name: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000)
         shell: bash
         run: |
           set -euo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
 
-          # Construimos el unit y el drop-in en variables simples
+          # --- Unit de systemd y drop-in de env ---
           read -r -d '' UNIT <<'EOFU'
           [Unit]
           Description=GSMS Web API (Uvicorn)
@@ -337,7 +336,6 @@ jobs:
           EnvironmentFile=-/etc/systemd/system/gsms-web.service.d/env.conf
           Environment=PYTHONPATH=/opt/gsms/app
 
-          # Preflight: venv y que src.main:app sea importable
           ExecStartPre=/bin/bash -lc 'test -x /opt/gsms/venv/bin/python'
           ExecStartPre=/opt/gsms/venv/bin/python -c "import sys; sys.path.insert(0,'/opt/gsms/app'); import importlib; m=importlib.import_module('src.main'); assert hasattr(m,'app'), 'Falta variable app en src.main'"
 
@@ -357,18 +355,18 @@ jobs:
           # GSMS_DB_URL=postgresql+psycopg2://user:pass@host:5432/gsms
           EOFE
 
-          # En vez de pelear con quoting dentro de --parameters, armamos un commands.json limpio
-          tmpdir="$(mktemp -d)"
-          cat > "${tmpdir}/commands.sh" <<'EOSH'
+          # --- Script remoto que se ejecutará en cada instancia ---
+          read -r -d '' SCRIPT <<'EOSH'
           set -euo pipefail
+
           id -u gsms >/dev/null 2>&1 || sudo useradd --system --home /opt/gsms --shell /usr/sbin/nologin gsms
           sudo install -d -m 0755 /opt/gsms/app /etc/systemd/system/gsms-web.service.d
           sudo chown -R gsms:gsms /opt/gsms || true
 
-          cat > /tmp/gsms-web.service.b64 <<'EOB1'
+          cat >/tmp/gsms-web.service.b64 <<'EOB1'
           __B64_UNIT__
           EOB1
-          cat > /tmp/gsms-web.env.b64 <<'EOB2'
+          cat >/tmp/gsms-web.env.b64 <<'EOB2'
           __B64_ENV__
           EOB2
 
@@ -377,9 +375,9 @@ jobs:
           sudo chown root:root /etc/systemd/system/gsms-web.service /etc/systemd/system/gsms-web.service.d/env.conf
           sudo chmod 644 /etc/systemd/system/gsms-web.service
           sudo chmod 640 /etc/systemd/system/gsms-web.service.d/env.conf
+
           sudo systemctl daemon-reload
           sudo systemctl enable gsms-web.service
-
           if ! sudo systemctl restart gsms-web.service; then
             echo '--- systemctl status ---'
             sudo systemctl --no-pager --full status gsms-web.service || true
@@ -390,30 +388,25 @@ jobs:
           sudo systemctl --no-pager --full status gsms-web.service | tail -n 80 || true
           EOSH
 
-          # Inyectamos los blobs en el script remoto
+          # Inyectamos los blobs en el script
           B64_UNIT="$(printf "%s" "$UNIT" | base64 -w0)"
           B64_ENV="$(printf "%s" "$ENVCONF" | base64 -w0)"
-          sed -i "s|__B64_UNIT__|${B64_UNIT}|g" "${tmpdir}/commands.sh"
-          sed -i "s|__B64_ENV__|${B64_ENV}|g"   "${tmpdir}/commands.sh"
+          SCRIPT="${SCRIPT/__B64_UNIT__/$B64_UNIT}"
+          SCRIPT="${SCRIPT/__B64_ENV__/$B64_ENV}"
 
-          # Empaquetamos el script en una sola línea para SSM
-          ONE_LINER="$(awk '{printf "%s\\n", $0}' "${tmpdir}/commands.sh")"
-          rm -rf "${tmpdir}"
+          # Codificamos el script completo para pasarlo a SSM sin problemas de comillas
+          SCRIPT_B64="$(printf "%s" "$SCRIPT" | base64 -w0)"
 
-          # Llamada a SSM con manejo explícito de errores (para ver el motivo si falla)
-          set -x
+          # Llamada a SSM: commands debe ser un ARRAY de strings
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Instalar/actualizar gsms-web.service a 0.0.0.0:8000" \
-            --parameters "commands=${ONE_LINER}" \
-            --query "Command.CommandId" --output text) || {
-              echo "ERROR al enviar send-command (arriba debe verse el motivo del CLI)."
-              exit 1
-            }
-          set +x
+            --comment "gsms-web.service setup" \
+            --parameters "commands=['echo $SCRIPT_B64 | base64 -d >/tmp/gsms_web_setup.sh','bash -lc '\''chmod +x /tmp/gsms_web_setup.sh && /tmp/gsms_web_setup.sh'\'']" \
+            --query "Command.CommandId" --output text)
 
           echo "CommandId: ${CMD_ID}"
+
 
 
 
