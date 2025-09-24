@@ -12,7 +12,8 @@ from src.Controller.Routes import gps_datas
 from src.Services.udp import start_udp_server
 from src.Services.ddns import start_ddns_service
 from src.Services.gps_broadcaster import start_gps_broadcaster
-from src.Core import log_ws, gps_ws
+from src.Services.response_broadcaster import start_response_broadcaster
+from src.Core import log_ws, gps_ws, request_ws, response_ws 
 
 # ------------------------------------------------------------
 # Utility function to parse comma-separated origins
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI):
     # Attach main loop to WebSocket managers
     log_ws.log_ws_manager.set_main_loop(loop)
     gps_ws.gps_ws_manager.set_main_loop(loop)
+    response_ws.response_ws_manager.set_main_loop(loop)
 
     # Start Dynamic DNS service if enabled
     if settings.DDNS_ENABLED:
@@ -83,6 +85,9 @@ async def lifespan(app: FastAPI):
         start_gps_broadcaster()
     else:
         print("[SERVICES] GPS broadcaster service disabled.")
+
+    print("[SERVICES] Starting response broadcaster...")
+    start_response_broadcaster()
 
     yield
     print("[SERVICES] Shutting down services...")
@@ -163,6 +168,15 @@ async def websocket_gps(ws: WebSocket):
     """WebSocket endpoint for GPS data broadcasting."""
     await socket_handler(ws, gps_ws.gps_ws_manager)
 
+@app.websocket("/request")
+async def websocket_request(ws: WebSocket):
+    """WebSocket endpoint for request handling."""
+    await socket_handler(ws, request_ws.request_ws_manager)
+
+@app.websocket("/response")
+async def websocket_response(ws: WebSocket):
+    """WebSocket endpoint for response handling."""
+    await socket_handler(ws, response_ws.response_ws_manager)
 # ------------------------------------------------------------
 # Serve Angular frontend and static assets
 # ------------------------------------------------------------
