@@ -494,13 +494,26 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --comment "GSMS post-reboot healthcheck" \
             --parameters "{\"commands\":[
-              \"for i in {1..20}; do curl -fsS --max-time 3 http://127.0.0.1:8000/health && exit 0; sleep 3; done; echo HEALTHCHECK_FAILED; exit 1\"
+              \"bash -lc 'set -euo pipefail; \
+                command -v curl >/dev/null 2>&1 || (which dnf >/dev/null && sudo dnf -y install curl || which yum >/dev/null && sudo yum -y install curl || true); \
+                for i in $(seq 1 40); do \
+                  if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null; then \
+                    echo HEALTH_OK; exit 0; \
+                  fi; \
+                  if systemctl is-active --quiet gsms-web; then echo \"[info] gsms-web activo, esperando app\"; else echo \"[warn] gsms-web no activo\"; fi; \
+                  sleep 5; \
+                done; \
+                echo HEALTHCHECK_FAILED; \
+                echo '--- systemctl status gsms-web (tail) ---'; systemctl --no-pager --full status gsms-web | tail -n 80 || true; \
+                echo '--- journalctl gsms-web (tail) ---'; journalctl -u gsms-web --no-pager -n 120 || true; \
+                exit 1' \"
             ]}" \
             --query "Command.CommandId" --output text)
 
           FAIL=0
           for id in "${IDS[@]}"; do
-            for i in {1..30}; do
+            echo "Esperando resultado en $id ..."
+            for i in {1..60}; do
               STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo "Unknown")
               if [[ "$STATUS" == "Success" ]]; then
                 echo "Health OK en $id"
@@ -508,6 +521,9 @@ jobs:
               fi
               if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
                 echo "Health FAILED en $id"
+                # Muestra stdout/stderr del SSM para diagnóstico
+                aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" \
+                  --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
                 FAIL=1
                 break
               fi
@@ -515,6 +531,7 @@ jobs:
             done
           done
           [[ $FAIL -eq 0 ]]
+
 
       # ----------------------------------------------------------------------
 

@@ -11,12 +11,7 @@ from src.Services.udp import start_udp_server
 from src.Services.ddns import start_ddns_service
 from src.Services.gps_broadcaster import start_gps_broadcaster
 from src.Services.response_broadcaster import start_response_broadcaster
-<<<<<<< HEAD
 from src.Core import log_ws, gps_ws, request_ws, response_ws  
-=======
-from src.Core import log_ws, gps_ws, request_ws, response_ws
-
->>>>>>> d0e2e63a10da92c04950a7a87b90ec5873dcecfc
 
 # ------------------------------------------------------------
 # Parse comma-separated origins or "*"
@@ -47,10 +42,6 @@ async def lifespan(app: FastAPI):
     # Attach main loop to WebSocket managers
     log_ws.log_ws_manager.set_main_loop(loop)
     gps_ws.gps_ws_manager.set_main_loop(loop)
-<<<<<<< HEAD
-=======
-    request_ws.request_ws_manager.set_main_loop(loop)
->>>>>>> d0e2e63a10da92c04950a7a87b90ec5873dcecfc
     response_ws.response_ws_manager.set_main_loop(loop)
 
     # Start Dynamic DNS service if enabled
@@ -140,29 +131,16 @@ async def websocket_gps(ws: WebSocket):
 
 @app.websocket("/request")
 async def websocket_request(ws: WebSocket):
-<<<<<<< HEAD
     """WebSocket endpoint for request handling."""
-=======
->>>>>>> d0e2e63a10da92c04950a7a87b90ec5873dcecfc
     await socket_handler(ws, request_ws.request_ws_manager)
 
 @app.websocket("/response")
 async def websocket_response(ws: WebSocket):
-<<<<<<< HEAD
     """WebSocket endpoint for response handling."""
     await socket_handler(ws, response_ws.response_ws_manager)
 
-=======
-    await socket_handler(ws, response_ws.response_ws_manager)
-
-
->>>>>>> d0e2e63a10da92c04950a7a87b90ec5873dcecfc
 # ------------------------------------------------------------
 # Serve Angular frontend
 # ------------------------------------------------------------
 frontend_path = os.path.join(os.path.dirname(__file__), "../front_deploy/browser")
-<<<<<<< HEAD
 app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
-=======
-app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
->>>>>>> d0e2e63a10da92c04950a7a87b90ec5873dcecfc
