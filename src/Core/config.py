@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Project Metadata
     # --------------------------
     PROJECT_NAME: str = "GSMS"          # Name of the project
-    PROJECT_VERSION: str = "1.0.3"      # Current version
+    PROJECT_VERSION: str = "0.0.3"      # Current version
 
     # --------------------------
     # Application Runtime Parameters
@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     # --------------------------
     UDP_ENABLED: bool = True             # Enable UDP server
     DDNS_ENABLED: bool = False           # Enable DDNS service (AWS doesn't need it)
-    BROADCASTER_ENABLE: bool = True      # Enable GPS broadcaster
 
     # --------------------------
     # Pydantic Settings Behavior

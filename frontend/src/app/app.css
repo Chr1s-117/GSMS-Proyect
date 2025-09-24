@@ -1,0 +1,32 @@
+/* 
+  // src/app/app.css
+   Application Root Styles
+   Defines the main layout for the root application component.
+   Ensures consistent spacing between left panel (GPS panel +
+   trace control) and the right map container.
+    */
+
+/* Layout for the main application component */
+.gps-layout {
+  display: flex;
+  flex-direction: row;   /* Horizontal layout: left column + map */
+  gap: 20px;             /* Space between columns */
+  align-items: flex-start; /* Align items at the top */
+}
+
+.left-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;             /* Space between stacked components */
+  flex: 0 0 300px;       /* Fixed width for left column */
+}
+
+app-trace-control {
+  width: 100%;           /* Expand trace control to full column width */
+}
+
+app-gps-map {
+  flex: 1;               /* Take remaining horizontal space */
+  height: 500px;         /* Default map height (can be adjusted) */
+}
+

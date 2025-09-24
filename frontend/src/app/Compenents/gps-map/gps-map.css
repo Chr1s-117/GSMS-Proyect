@@ -1,0 +1,27 @@
+/**
+ * Styles for the GPS Map container.
+ * 
+ * This container is used as the target <div> for Leaflet map rendering.
+ * It enforces dimensions, layout boundaries, and visual separation 
+ * from surrounding UI components.
+ */
+
+#gps-map {
+  /* Fixed height for map viewport */
+  height: 400px;
+
+  /* Full width inside its parent container */
+  width: 100%;
+
+  /* Constrain maximum width for better readability on large screens */
+  max-width: 600px;
+
+  /* Light gray border to separate map from adjacent UI sections */
+  border: 1px solid #ccc;
+
+  /* Rounded corners for modern UI look */
+  border-radius: 6px;
+
+  /* Optional: ensure that map tiles or content never overflow */
+  overflow: hidden;
+}

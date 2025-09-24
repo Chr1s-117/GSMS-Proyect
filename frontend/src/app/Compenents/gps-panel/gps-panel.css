@@ -1,0 +1,20 @@
+/* src/app/components/gps-panel/gps-panel.component.css */
+.gps-panel {
+  border: 1px solid #ccc;       /* Light gray border for panel */
+  padding: 12px;                  /* Space inside the panel */
+  border-radius: 6px;            /* Rounded corners */
+  max-width: 300px;              /* Limit panel width */
+  background: #f9f9f9;          /* Light background for contrast */
+  font-family: Arial, sans-serif; /* Standard readable font */
+  white-space: nowrap; /* Prevent text wrapping */
+}
+
+h3 {
+  margin-top: 0;
+  font-size: 16px;
+}
+
+p {
+  margin: 4px 0;
+  font-size: 14px;
+}

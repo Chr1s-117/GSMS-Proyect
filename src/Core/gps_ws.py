@@ -1,5 +1,3 @@
-# src/Core/gps_ws.py
-
 from typing import Dict, Any
 from .wsBase import WebSocketManager
 from fastapi import WebSocket
