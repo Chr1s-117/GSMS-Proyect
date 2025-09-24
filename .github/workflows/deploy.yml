@@ -316,13 +316,14 @@ jobs:
               --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
           done
 
+      # NUEVO paso: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000)
       - name: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000)
         shell: bash
         run: |
           set -euo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
 
-          # Unit con PYTHONPATH y un chequeo previo de import
+          # Construimos el unit y el drop-in en variables simples
           read -r -d '' UNIT <<'EOFU'
           [Unit]
           Description=GSMS Web API (Uvicorn)
@@ -330,26 +331,20 @@ jobs:
           Wants=network-online.target
 
           [Service]
-          # Asegúrate de que el usuario exista (lo creamos antes vía SSM)
           User=gsms
           Group=gsms
           WorkingDirectory=/opt/gsms/app
-          # Si no existe el archivo, no falla por el prefijo "-"
           EnvironmentFile=-/etc/systemd/system/gsms-web.service.d/env.conf
-          # Hace que "src.*" sea importable desde /opt/gsms/app
           Environment=PYTHONPATH=/opt/gsms/app
 
-          # Verificación previa: que /opt/gsms/venv exista y que src.main:app sea importable
+          # Preflight: venv y que src.main:app sea importable
           ExecStartPre=/bin/bash -lc 'test -x /opt/gsms/venv/bin/python'
           ExecStartPre=/opt/gsms/venv/bin/python -c "import sys; sys.path.insert(0,'/opt/gsms/app'); import importlib; m=importlib.import_module('src.main'); assert hasattr(m,'app'), 'Falta variable app en src.main'"
 
-          # Uvicorn sirviendo en 0.0.0.0:8000
           ExecStart=/opt/gsms/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 
           Restart=always
           RestartSec=3
-
-          # Logs legibles en journalctl -u gsms-web
           StandardOutput=journal
           StandardError=journal
 
@@ -357,44 +352,69 @@ jobs:
           WantedBy=multi-user.target
           EOFU
 
-          # Drop-in opcional de variables de entorno (ajústalo a tu realidad)
           read -r -d '' ENVCONF <<'EOFE'
           APP_ENV=prod
-          # Ejemplo:
-          # GSMS_DB_URL=postgresql+psycopg2://user:pass@dbhost:5432/gsms
+          # GSMS_DB_URL=postgresql+psycopg2://user:pass@host:5432/gsms
           EOFE
 
-          B64_UNIT=$(printf "%s" "$UNIT" | base64 -w0)
-          B64_ENV=$(printf "%s" "$ENVCONF" | base64 -w0)
+          # En vez de pelear con quoting dentro de --parameters, armamos un commands.json limpio
+          tmpdir="$(mktemp -d)"
+          cat > "${tmpdir}/commands.sh" <<'EOSH'
+          set -euo pipefail
+          id -u gsms >/dev/null 2>&1 || sudo useradd --system --home /opt/gsms --shell /usr/sbin/nologin gsms
+          sudo install -d -m 0755 /opt/gsms/app /etc/systemd/system/gsms-web.service.d
+          sudo chown -R gsms:gsms /opt/gsms || true
 
-          # Ejecuta en cada instancia por SSM
+          cat > /tmp/gsms-web.service.b64 <<'EOB1'
+          __B64_UNIT__
+          EOB1
+          cat > /tmp/gsms-web.env.b64 <<'EOB2'
+          __B64_ENV__
+          EOB2
+
+          base64 -d /tmp/gsms-web.service.b64 | sudo tee /etc/systemd/system/gsms-web.service >/dev/null
+          base64 -d /tmp/gsms-web.env.b64    | sudo tee /etc/systemd/system/gsms-web.service.d/env.conf >/dev/null
+          sudo chown root:root /etc/systemd/system/gsms-web.service /etc/systemd/system/gsms-web.service.d/env.conf
+          sudo chmod 644 /etc/systemd/system/gsms-web.service
+          sudo chmod 640 /etc/systemd/system/gsms-web.service.d/env.conf
+          sudo systemctl daemon-reload
+          sudo systemctl enable gsms-web.service
+
+          if ! sudo systemctl restart gsms-web.service; then
+            echo '--- systemctl status ---'
+            sudo systemctl --no-pager --full status gsms-web.service || true
+            echo '--- journalctl tail ---'
+            sudo journalctl -u gsms-web --no-pager -n 120 || true
+            exit 1
+          fi
+          sudo systemctl --no-pager --full status gsms-web.service | tail -n 80 || true
+          EOSH
+
+          # Inyectamos los blobs en el script remoto
+          B64_UNIT="$(printf "%s" "$UNIT" | base64 -w0)"
+          B64_ENV="$(printf "%s" "$ENVCONF" | base64 -w0)"
+          sed -i "s|__B64_UNIT__|${B64_UNIT}|g" "${tmpdir}/commands.sh"
+          sed -i "s|__B64_ENV__|${B64_ENV}|g"   "${tmpdir}/commands.sh"
+
+          # Empaquetamos el script en una sola línea para SSM
+          ONE_LINER="$(awk '{printf "%s\\n", $0}' "${tmpdir}/commands.sh")"
+          rm -rf "${tmpdir}"
+
+          # Llamada a SSM con manejo explícito de errores (para ver el motivo si falla)
+          set -x
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
             --comment "Instalar/actualizar gsms-web.service a 0.0.0.0:8000" \
-            --parameters "{\"commands\":[
-              \"set -e\",
-              # 1) Asegurar usuario/grupo gsms y permisos
-              \"id -u gsms >/dev/null 2>&1 || sudo useradd --system --home /opt/gsms --shell /usr/sbin/nologin gsms\",
-              \"sudo install -d -m 0755 /opt/gsms/app /etc/systemd/system/gsms-web.service.d\",
-              \"sudo chown -R gsms:gsms /opt/gsms || true\",
-
-              # 2) Instalar unit + drop-in env
-              \"echo '${B64_UNIT}' | base64 -d | sudo tee /etc/systemd/system/gsms-web.service >/dev/null\",
-              \"echo '${B64_ENV}'  | base64 -d | sudo tee /etc/systemd/system/gsms-web.service.d/env.conf >/dev/null\",
-              \"sudo chown root:root /etc/systemd/system/gsms-web.service /etc/systemd/system/gsms-web.service.d/env.conf\",
-              \"sudo chmod 644 /etc/systemd/system/gsms-web.service\",
-              \"sudo chmod 640 /etc/systemd/system/gsms-web.service.d/env.conf\",
-              \"sudo systemctl daemon-reload\",
-              \"sudo systemctl enable gsms-web.service\",
-
-              # 3) (Re)arrancar y sacar diagnóstico útil si falla
-              \"if ! sudo systemctl restart gsms-web.service; then echo '--- systemctl status ---'; sudo systemctl --no-pager --full status gsms-web.service || true; echo '--- journalctl tail ---'; sudo journalctl -u gsms-web --no-pager -n 120 || true; exit 1; fi\",
-              \"sudo systemctl --no-pager --full status gsms-web.service | tail -n 80 || true\"
-            ]}" \
-            --query "Command.CommandId" --output text)
+            --parameters "commands=${ONE_LINER}" \
+            --query "Command.CommandId" --output text) || {
+              echo "ERROR al enviar send-command (arriba debe verse el motivo del CLI)."
+              exit 1
+            }
+          set +x
 
           echo "CommandId: ${CMD_ID}"
+
 
 
       - name: Instalar unit systemd gsms-release-sync.service
@@ -635,7 +655,6 @@ jobs:
           echo "::error::Timeout esperando a que termine el Instance Refresh ($REFRESH_ID)."
           exit 1
 
-      # === 2: Healthcheck post-reboot con diagnóstico enriquecido ===
       - name: Post-reboot healthcheck via SSM
         if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
         shell: bash
@@ -648,19 +667,19 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --comment "GSMS post-reboot healthcheck" \
             --parameters "{\"commands\":[
-              \"bash -lc 'set -euo pipefail; \
-                command -v curl >/dev/null 2>&1 || (which dnf >/dev/null && sudo dnf -y install curl || which yum >/dev/null && sudo yum -y install curl || true); \
-                for i in $(seq 1 40); do \
-                  if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null; then \
-                    echo HEALTH_OK; exit 0; \
-                  fi; \
-                  if systemctl is-active --quiet gsms-web; then echo \"[info] gsms-web activo, esperando app\"; else echo \"[warn] gsms-web no activo\"; fi; \
-                  sleep 5; \
-                done; \
-                echo HEALTHCHECK_FAILED; \
-                echo \"--- systemctl status gsms-web (tail) ---\"; systemctl --no-pager --full status gsms-web | tail -n 80 || true; \
-                echo \"--- journalctl gsms-web (tail) ---\"; journalctl -u gsms-web --no-pager -n 120 || true; \
-                exit 1'\"
+              \"bash -lc 'set -euo pipefail;
+                command -v curl >/dev/null 2>&1 || (which dnf >/dev/null && sudo dnf -y install curl || which yum >/dev/null && sudo yum -y install curl || true);
+                for i in $(seq 1 40); do
+                  if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null; then
+                    echo HEALTH_OK; exit 0;
+                  fi;
+                  systemctl is-active --quiet gsms-web && echo \"[info] gsms-web=active, esperando app\" || echo \"[warn] gsms-web no activo\";
+                  sleep 5;
+                done;
+                echo HEALTHCHECK_FAILED;
+                echo '--- systemctl status gsms-web (tail) ---'; systemctl --no-pager --full status gsms-web | tail -n 80 || true;
+                echo '--- journalctl gsms-web (tail) ---'; journalctl -u gsms-web --no-pager -n 120 || true;
+                exit 1' \"
             ]}" \
             --query "Command.CommandId" --output text)
 
@@ -684,6 +703,7 @@ jobs:
             done
           done
           [[ $FAIL -eq 0 ]]
+
 
       - name: Fin
         run: echo "Despliegue completado correctamente en todas las instancias."
