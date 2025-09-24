@@ -468,19 +468,99 @@ jobs:
           aws ec2 wait instance-status-ok --instance-ids "${IDS[@]}"
           echo "Checks OK"
 
-      - name: Instance Refresh
-        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+      - name: Start/attach & monitor ASG Instance Refresh (idempotent)
         shell: bash
+        env:
+          # Opcional: si la pones a 'true', cancelará un refresh en progreso y lanzará uno nuevo.
+          ASG_CANCEL_INPROGRESS: "false"
         run: |
           set -euo pipefail
-          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
-          if [[ -n "${ASG_NAME}" ]]; then
-            echo "Iniciando Instance Refresh en ASG ${ASG_NAME} ..."
-            aws autoscaling start-instance-refresh --auto-scaling-group-name "${ASG_NAME}" --preferences '{"MinHealthyPercentage":100,"InstanceWarmup":120}'
-            echo "Instance Refresh iniciado (si aplica)."
-          else
+
+          ASG="${{ env.ASG_NAME }}"
+          if [[ -z "$ASG" ]]; then
             echo "No se definió ASG_NAME; se omite Instance Refresh."
+            exit 0
           fi
+
+          echo "Consultando estado de Instance Refresh en ASG: $ASG"
+          # Trae el último refresh (si existe)
+          read -r CUR_ID CUR_STATUS CUR_REASON CUR_START <<<"$(
+            aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG" \
+              --max-records 1 \
+              --query 'InstanceRefreshes[0].[InstanceRefreshId,Status,StatusReason,StartTime]' \
+              --output text || true
+          )"
+
+          if [[ -n "${CUR_ID:-}" && "${CUR_STATUS:-}" =~ ^(Pending|InProgress)$ ]]; then
+            echo "Hay un Instance Refresh en curso:"
+            echo "  ID:      $CUR_ID"
+            echo "  Status:  $CUR_STATUS"
+            echo "  Reason:  ${CUR_REASON:-<none>}"
+            echo "  Started: ${CUR_START:-<unknown>}"
+
+            if [[ "${ASG_CANCEL_INPROGRESS}" == "true" ]]; then
+              echo "ASG_CANCEL_INPROGRESS=true -> cancelando refresh en curso..."
+              aws autoscaling cancel-instance-refresh --auto-scaling-group-name "$ASG" >/dev/null
+              # Espera rápido a que quede marcado como Cancelled
+              for i in {1..20}; do
+                S=$(aws autoscaling describe-instance-refreshes \
+                      --auto-scaling-group-name "$ASG" \
+                      --max-records 1 \
+                      --query 'InstanceRefreshes[0].Status' \
+                      --output text || echo "Unknown")
+                [[ "$S" == "Cancelled" || "$S" == "Successful" || "$S" == "Failed" ]] && break
+                sleep 3
+              done
+              echo "Iniciando nuevo Instance Refresh..."
+              REFRESH_ID=$(aws autoscaling start-instance-refresh \
+                --auto-scaling-group-name "$ASG" \
+                --strategy Rolling \
+                --preferences '{"MinHealthyPercentage":100,"InstanceWarmup":120}' \
+                --query 'InstanceRefreshId' --output text)
+            else
+              echo "Enganchando al refresh existente (no se inicia uno nuevo)."
+              REFRESH_ID="$CUR_ID"
+            fi
+          else
+            echo "No hay refresh en curso. Iniciando uno nuevo..."
+            REFRESH_ID=$(aws autoscaling start-instance-refresh \
+              --auto-scaling-group-name "$ASG" \
+              --strategy Rolling \
+              --preferences '{"MinHealthyPercentage":100,"InstanceWarmup":120}' \
+              --query 'InstanceRefreshId' --output text)
+          fi
+
+          echo "Monitoreando Instance Refresh: $REFRESH_ID"
+          # Espera hasta 30 min aprox (60 * 30s). Ajusta si tu flota/AMI tarda más.
+          for i in {1..60}; do
+            DESC=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG" \
+              --instance-refresh-ids "$REFRESH_ID" \
+              --query 'InstanceRefreshes[0].[Status,StatusReason,PercentageComplete]' \
+              --output text || echo "")
+            STATUS=$(echo "$DESC" | awk '{print $1}')
+            REASON=$(echo "$DESC" | cut -d' ' -f2- | sed -e 's/[[:space:]]*$//' || true)
+            PCT=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG" \
+              --instance-refresh-ids "$REFRESH_ID" \
+              --query 'InstanceRefreshes[0].PercentageComplete' --output text 2>/dev/null || echo "0")
+
+            echo "  [$i] Status=$STATUS  Progress=${PCT:-0}%  Reason=${REASON:-<none>}"
+
+            if [[ "$STATUS" == "Successful" ]]; then
+              echo "Instance Refresh completado."
+              exit 0
+            elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              echo "::error::Instance Refresh terminó con estado $STATUS. Reason: ${REASON:-n/a}"
+              exit 1
+            fi
+            sleep 30
+          done
+
+          echo "::error::Timeout esperando a que termine el Instance Refresh ($REFRESH_ID)."
+          exit 1
+
 
       - name: Post-reboot healthcheck via SSM
         if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
