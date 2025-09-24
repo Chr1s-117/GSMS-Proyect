@@ -358,7 +358,6 @@ jobs:
           # --- Script remoto que se ejecutará en cada instancia ---
           read -r -d '' SCRIPT <<'EOSH'
           set -euo pipefail
-
           id -u gsms >/dev/null 2>&1 || sudo useradd --system --home /opt/gsms --shell /usr/sbin/nologin gsms
           sudo install -d -m 0755 /opt/gsms/app /etc/systemd/system/gsms-web.service.d
           sudo chown -R gsms:gsms /opt/gsms || true
@@ -388,24 +387,35 @@ jobs:
           sudo systemctl --no-pager --full status gsms-web.service | tail -n 80 || true
           EOSH
 
-          # Inyectamos los blobs en el script
+          # Inyectar blobs y codificar
           B64_UNIT="$(printf "%s" "$UNIT" | base64 -w0)"
           B64_ENV="$(printf "%s" "$ENVCONF" | base64 -w0)"
           SCRIPT="${SCRIPT/__B64_UNIT__/$B64_UNIT}"
           SCRIPT="${SCRIPT/__B64_ENV__/$B64_ENV}"
-
-          # Codificamos el script completo para pasarlo a SSM sin problemas de comillas
           SCRIPT_B64="$(printf "%s" "$SCRIPT" | base64 -w0)"
 
-          # Llamada a SSM: commands debe ser un ARRAY de strings
+          # JSON de parámetros en archivo (para evitar problemas de comillas)
+          PARAMS_FILE="$(mktemp)"
+          cat > "$PARAMS_FILE" <<EOF
+          {
+            "commands": [
+              "bash -lc 'echo $SCRIPT_B64 | base64 -d > /tmp/gsms_web_setup.sh'",
+              "bash -lc 'chmod +x /tmp/gsms_web_setup.sh && /tmp/gsms_web_setup.sh'"
+            ]
+          }
+          EOF
+
+          # Enviar send-command usando cli-input-json
+          set -x
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${IDS[@]}" \
             --document-name "AWS-RunShellScript" \
             --comment "gsms-web.service setup" \
-            --parameters "commands=['echo $SCRIPT_B64 | base64 -d >/tmp/gsms_web_setup.sh','bash -lc '\''chmod +x /tmp/gsms_web_setup.sh && /tmp/gsms_web_setup.sh'\'']" \
+            --parameters file://"$PARAMS_FILE" \
             --query "Command.CommandId" --output text)
-
+          set +x
           echo "CommandId: ${CMD_ID}"
+
 
 
 
