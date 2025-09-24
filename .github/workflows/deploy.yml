@@ -301,7 +301,7 @@ jobs:
               \"echo '${B64}' | base64 -d > /usr/local/bin/deploy_from_s3.sh\",
               \"chmod +x /usr/local/bin/deploy_from_s3.sh\",
               \"sed -i 's/\\r$//' /usr/local/bin/deploy_from_s3.sh\",
-              \"head -n 3 /usr/local/bin/deploy_from_s3.sh || true\"
+              \"head -n 3 /usr/local/bin/deploy_from_s3.sh\"
             ]}" \
             --query "Command.CommandId" --output text)
 
