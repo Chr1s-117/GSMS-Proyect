@@ -65,9 +65,6 @@ async def lifespan(app: FastAPI):
     print("[SERVICES] Starting response broadcaster...")
     start_response_broadcaster()
 
-    print("[SERVICES] Starting response broadcaster...")
-    start_response_broadcaster()
-
     yield
     print("[SERVICES] Shutting down services...")
 
