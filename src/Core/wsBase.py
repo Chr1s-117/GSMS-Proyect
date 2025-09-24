@@ -1,5 +1,3 @@
-# src/Core/wsBase.py
-
 from fastapi import WebSocket
 import asyncio
 from typing import List, Optional, Dict, Any
