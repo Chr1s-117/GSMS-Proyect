@@ -468,6 +468,20 @@ jobs:
           aws ec2 wait instance-status-ok --instance-ids "${IDS[@]}"
           echo "Checks OK"
 
+      - name: Instance Refresh
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          if [[ -n "${ASG_NAME}" ]]; then
+            echo "Iniciando Instance Refresh en ASG ${ASG_NAME} ..."
+            aws autoscaling start-instance-refresh --auto-scaling-group-name "${ASG_NAME}" --preferences '{"MinHealthyPercentage":100,"InstanceWarmup":120}'
+            echo "Instance Refresh iniciado (si aplica)."
+          else
+            echo "No se definió ASG_NAME; se omite Instance Refresh."
+          fi
+
       - name: Post-reboot healthcheck via SSM
         if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
         shell: bash
