@@ -27,7 +27,7 @@ env:
   # ARN del rol que asume GitHub (defínelo como Repo Variable o Secret)
   AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
 
-  # <<< NUEVO >>> Controla si se reinician las instancias al final
+  # Controla si se reinician las instancias al final
   REBOOT_AFTER_DEPLOY: "true"
 
 jobs:
@@ -186,7 +186,7 @@ jobs:
             --no-progress \
             --exclude ".git/*" \
             --exclude ".github/*"
-        
+
       - name: Verificar que la release tenga contenido
         shell: bash
         run: |
@@ -316,6 +316,61 @@ jobs:
               --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
           done
 
+      # === A2: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000) ===
+      - name: Instalar/actualizar gsms-web.service (Uvicorn 0.0.0.0:8000)
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+
+          read -r -d '' UNIT <<'EOFU'
+          [Unit]
+          Description=GSMS Web API (Uvicorn)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          User=gsms
+          Group=gsms
+          WorkingDirectory=/opt/gsms/app
+          EnvironmentFile=-/etc/systemd/system/gsms-web.service.d/env.conf
+          ExecStart=/opt/gsms/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+          EOFU
+
+          # Opcional: drop-in de variables mínimas (elimina o ajusta si ya manejas envs por otra vía)
+          read -r -d '' ENVCONF <<'EOFE'
+          APP_ENV=prod
+          # GSMS_DB_URL=postgresql+psycopg2://user:pass@dbhost:5432/gsms
+          EOFE
+
+          B64_UNIT=$(printf "%s" "$UNIT" | base64 -w0)
+          B64_ENV=$(printf "%s" "$ENVCONF" | base64 -w0)
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Instalar/actualizar gsms-web.service a 0.0.0.0:8000" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"install -d -m 0755 /etc/systemd/system/gsms-web.service.d\",
+              \"echo '${B64_UNIT}' | base64 -d > /etc/systemd/system/gsms-web.service\",
+              \"echo '${B64_ENV}'  | base64 -d > /etc/systemd/system/gsms-web.service.d/env.conf\",
+              \"chown root:root /etc/systemd/system/gsms-web.service /etc/systemd/system/gsms-web.service.d/env.conf\",
+              \"chmod 644 /etc/systemd/system/gsms-web.service\",
+              \"chmod 640 /etc/systemd/system/gsms-web.service.d/env.conf\",
+              \"systemctl daemon-reload\",
+              \"systemctl enable --now gsms-web.service\",
+              \"systemctl status gsms-web.service --no-pager -l | tail -n 80 || true\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          echo "CommandId: ${CMD_ID}"
+
       - name: Instalar unit systemd gsms-release-sync.service
         shell: bash
         run: |
@@ -358,8 +413,6 @@ jobs:
             --query "Command.CommandId" --output text)
 
           echo "CommandId: ${CMD_ID}"
-
-
 
       - name: Preflight S3 desde EC2 (permisos/alcance)
         shell: bash
@@ -447,7 +500,7 @@ jobs:
             exit 1
           fi
 
-      # ----------------------- NUEVA SECCIÓN: REINICIO -----------------------
+      # ----------------------- REINICIO -----------------------
       - name: Reboot instances (optional)
         if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
         shell: bash
@@ -464,14 +517,12 @@ jobs:
           set -euo pipefail
           IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
           echo "Esperando a que las instancias pasen instance-status-ok..."
-          # Espera a que arranquen y pasen los 2 checks (system & instance)
           aws ec2 wait instance-status-ok --instance-ids "${IDS[@]}"
           echo "Checks OK"
 
       - name: Start/attach & monitor ASG Instance Refresh (idempotent)
         shell: bash
         env:
-          # Opcional: si la pones a 'true', cancelará un refresh en progreso y lanzará uno nuevo.
           ASG_CANCEL_INPROGRESS: "false"
         run: |
           set -euo pipefail
@@ -483,7 +534,6 @@ jobs:
           fi
 
           echo "Consultando estado de Instance Refresh en ASG: $ASG"
-          # Trae el último refresh (si existe)
           read -r CUR_ID CUR_STATUS CUR_REASON CUR_START <<<"$(
             aws autoscaling describe-instance-refreshes \
               --auto-scaling-group-name "$ASG" \
@@ -502,7 +552,6 @@ jobs:
             if [[ "${ASG_CANCEL_INPROGRESS}" == "true" ]]; then
               echo "ASG_CANCEL_INPROGRESS=true -> cancelando refresh en curso..."
               aws autoscaling cancel-instance-refresh --auto-scaling-group-name "$ASG" >/dev/null
-              # Espera rápido a que quede marcado como Cancelled
               for i in {1..20}; do
                 S=$(aws autoscaling describe-instance-refreshes \
                       --auto-scaling-group-name "$ASG" \
@@ -532,7 +581,6 @@ jobs:
           fi
 
           echo "Monitoreando Instance Refresh: $REFRESH_ID"
-          # Espera hasta 30 min aprox (60 * 30s). Ajusta si tu flota/AMI tarda más.
           for i in {1..60}; do
             DESC=$(aws autoscaling describe-instance-refreshes \
               --auto-scaling-group-name "$ASG" \
@@ -561,7 +609,7 @@ jobs:
           echo "::error::Timeout esperando a que termine el Instance Refresh ($REFRESH_ID)."
           exit 1
 
-
+      # === 2: Healthcheck post-reboot con diagnóstico enriquecido ===
       - name: Post-reboot healthcheck via SSM
         if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
         shell: bash
@@ -584,9 +632,9 @@ jobs:
                   sleep 5; \
                 done; \
                 echo HEALTHCHECK_FAILED; \
-                echo '--- systemctl status gsms-web (tail) ---'; systemctl --no-pager --full status gsms-web | tail -n 80 || true; \
-                echo '--- journalctl gsms-web (tail) ---'; journalctl -u gsms-web --no-pager -n 120 || true; \
-                exit 1' \"
+                echo \"--- systemctl status gsms-web (tail) ---\"; systemctl --no-pager --full status gsms-web | tail -n 80 || true; \
+                echo \"--- journalctl gsms-web (tail) ---\"; journalctl -u gsms-web --no-pager -n 120 || true; \
+                exit 1'\"
             ]}" \
             --query "Command.CommandId" --output text)
 
@@ -601,7 +649,6 @@ jobs:
               fi
               if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
                 echo "Health FAILED en $id"
-                # Muestra stdout/stderr del SSM para diagnóstico
                 aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" \
                   --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
                 FAIL=1
@@ -611,9 +658,6 @@ jobs:
             done
           done
           [[ $FAIL -eq 0 ]]
-
-
-      # ----------------------------------------------------------------------
 
       - name: Fin
         run: echo "Despliegue completado correctamente en todas las instancias."
