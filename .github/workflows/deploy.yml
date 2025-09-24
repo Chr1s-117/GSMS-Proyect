@@ -392,6 +392,33 @@ jobs:
             echo "---------------------------"
           done
 
+      - name: Instalar/actualizar gsms-web.service (desde repo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+
+          # Lee el unit del repo y lo envía a las instancias (base64 para evitar problemas de quoting)
+          B64_UNIT="$(base64 -w0 deploy/systemd/gsms-web.service)"
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Instalar/actualizar gsms-web.service" \
+            --parameters "{\"commands\":[
+              \"set -euo pipefail\",
+              \"echo '${B64_UNIT}' | base64 -d | sudo tee /etc/systemd/system/gsms-web.service >/dev/null\",
+              \"sudo chmod 644 /etc/systemd/system/gsms-web.service\",
+              \"sudo systemctl daemon-reload\",
+              \"sudo systemctl enable gsms-web.service\",
+              \"sudo systemctl restart gsms-web.service\",
+              \"sudo systemctl --no-pager --full status gsms-web.service | tail -n 80 || true\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          echo "CommandId: ${CMD_ID}"
+
+
       - name: Desplegar release en EC2 vía SSM
         id: deploy
         shell: bash

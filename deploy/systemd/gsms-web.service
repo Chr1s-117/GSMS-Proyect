@@ -1,21 +1,22 @@
 # deploy/systemd/gsms-web.service
-
 [Unit]
-Description=GSMS FastAPI (Uvicorn 127.0.0.1:8001)
+Description=GSMS FastAPI (Uvicorn :8000)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+# For fix the error about no find the database
+EnvironmentFile=/etc/gsms/env
 User=gsms
 Group=gsms
 WorkingDirectory=/opt/gsms/app
-# Variables llegan por drop-in env.conf
-
-# La línea ExecStart corregida para ser más segura
-ExecStart=/opt/gsms/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8001 --proxy-headers --forwarded-allow-ips='127.0.0.1'
-
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/gsms/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
 Restart=always
 RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target
