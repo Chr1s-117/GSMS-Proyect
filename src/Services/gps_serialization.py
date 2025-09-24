@@ -40,3 +40,4 @@ def serialize_many(rows: list[GPS_data], include_id: bool = False) -> list[dict[
     - include_id: si es True, incluye el campo interno 'id' en cada dict.
     """
     return [serialized for row in rows if (serialized := serialize_gps_row(row, include_id=include_id)) is not None]
+
