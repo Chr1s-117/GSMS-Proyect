@@ -1,68 +1,83 @@
 # src/Services/gps_broadcaster.py
 
-"""
-GPS Broadcaster Service with Change Detection (Real-Time)
-
-- Continuously fetches the latest GPS data from the database.
-- Sends the data via WebSocket only if it has changed since the last broadcast.
-- Operates in a daemon thread to run in parallel with the backend services.
-"""
-
 import threading
-from typing import Optional, Dict
-from src.Repositories.gps_data import get_last_gps_row
-from src.DB.session import SessionLocal
-from src.Core import log_ws, gps_ws
+from typing import Dict, Any, List
+from src.Core import gps_ws, log_ws
 
 
-def broadcast_loop():
+class GPSBroadcaster:
     """
-    Main loop that continuously fetches the latest GPS data
-    and sends it via WebSocket only if it has changed.
-    Runs indefinitely in a daemon thread.
+    Service that manages a buffer of pending GPS data
+    and sends them via GPSWebSocketManager using the thread-safe entry point.
     """
-    last_sent_row: Optional[Dict[str, str | float]] = None
 
-    while True:
-        try:
-            with SessionLocal() as db:
-                # get_last_gps_row already returns dict | None
-                data_to_send = get_last_gps_row(db)
+    def __init__(self):
+        self.pending_gps: List[Dict[str, Any]] = []
+        self.lock = threading.Lock()
+        self.event = threading.Event()
 
-            if data_to_send is not None:
-                # Send only if the data has changed since the last broadcast
-                if (
-                    data_to_send != last_sent_row
-                    and gps_ws.gps_ws_manager.has_clients
-                    and log_ws.log_ws_manager.has_clients
-                ):
-                    print(f"[GPS-BROADCAST*] Sent GPS data: {data_to_send}")
-                    gps_ws.gps_from_thread(data_to_send)
-                    log_ws.log_from_thread(
-                        f"[GPS-BROADCAST] Sent GPS data: {data_to_send}",
-                        msg_type="log"
-                    )
-                    last_sent_row = data_to_send
+    def add_gps(self, payload: Dict[str, Any]):
+        """
+        Add a GPS data payload to the buffer and notify the broadcast loop.
+        Payload must be a dict with GPS fields (e.g., lat, lon, timestamp...).
+        """
+        if not payload:
+            print("[GPS-BROADCAST] Ignored empty GPS payload")
+            return
 
-        except Exception as ex:
-            log_ws.log_from_thread(
-                f"[GPS-BROADCAST] Error in broadcast_loop: {ex}",
-                msg_type="error"
-            )
+        with self.lock:
+            self.pending_gps.append(payload)
+            print(f"[GPS-BROADCAST] Added GPS payload. Pending: {len(self.pending_gps)}")
+            self.event.set()  # wake up the broadcast loop
+
+    def _broadcast_loop(self):
+        """
+        Continuously tries to send pending GPS data if clients are connected.
+        """
+        while True:
+            # Wait until there is at least one GPS payload pending
+            self.event.wait()
+
+            while True:  # process all pending GPS payloads
+                with self.lock:
+                    if not self.pending_gps:
+                        self.event.clear()
+                        break
+                    gps_to_send = list(self.pending_gps)
+                    self.pending_gps.clear()
+
+                for gps_data in gps_to_send:
+                    if gps_ws.gps_ws_manager.has_clients:
+                        # Thread-safe send to GPS clients
+                        gps_ws.gps_from_thread(gps_data)
+
+                        if log_ws.log_ws_manager.has_clients:
+                            log_ws.log_from_thread(
+                                f"[GPS-BROADCAST] Sent GPS data!!!!: {gps_data}",
+                                msg_type="log"
+                            )
+                    else:
+                        # No clients: re-add to buffer for next attempt
+                        with self.lock:
+                            self.pending_gps.append(gps_data)
+                        # print("[GPS-BROADCAST] No clients connected, keeping GPS data in buffer")
+                        break  # exit for-loop and retry later
 
 
+# --- Internal broadcaster instance ---
+_broadcaster = GPSBroadcaster()
+
+# --- Public function for other modules ---
+def add_gps(payload: Dict[str, Any]):
+    _broadcaster.add_gps(payload)
+
+# --- Starter for the broadcast loop ---
 def start_gps_broadcaster() -> threading.Thread:
-    """
-    Launches the GPS broadcaster in a daemon thread.
-    Returns the thread object for reference if needed.
-    """
     thread = threading.Thread(
-        target=broadcast_loop,
+        target=_broadcaster._broadcast_loop,
         daemon=True,
-        name="GPS-Broadcaster"
+        name="GPSBroadcaster"
     )
     thread.start()
-
     print("[GPS-BROADCAST] Started broadcast thread")
     return thread
-
