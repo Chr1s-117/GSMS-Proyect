@@ -1,5 +1,4 @@
 # src/Core/settings.py
-
 from pydantic_settings import BaseSettings
 
 """
@@ -30,12 +29,21 @@ class Settings(BaseSettings):
     # Mandatory: Must be provided via environment variable
     DATABASE_URL: str
 
-    # --------------------------
-    # Feature Flags / Service Configuration
-    # --------------------------
-    UDP_ENABLED: bool = True             # Enable UDP server
-    DDNS_ENABLED: bool = False           # Enable DDNS service (AWS doesn't need it)
-    BROADCASTER_ENABLE: bool = True      # Enable GPS broadcaster
+    # --- BEGIN: UDP / broadcasters on/off from env -----------------
+    import os
+
+    def _truthy(name: str, default: bool) -> bool:
+        v = os.getenv(name, "")
+        if v == "":   # sin variable => usa el default que definas
+            return default
+        return str(v).strip().lower() not in ("0", "false", "no", "off")
+
+    # Si pones DISABLE_UDP=1 -> UDP_ENABLED=False
+    UDP_ENABLED = _truthy("DISABLE_UDP", True) and not _truthy("DISABLE_UDP", False)
+
+    # Si además quieres apagar los broadcasters al desactivar UDP:
+    BROADCASTER_ENABLE = _truthy("BROADCASTER_ENABLE", True) and UDP_ENABLED
+    # --- END -------------------------------------------------------
 
     # --------------------------
     # Pydantic Settings Behavior
