@@ -2,17 +2,21 @@ name: Deploy Dev (per-developer)
 
 on:
   push:
-    branches: [ "main" ]           # despliega cuando se hace push a main del repo dev
-  workflow_dispatch:                # permite ejecutarlo manualmente
+    branches: [ "main" ]          # despliega al hacer push a main del repo dev
+  workflow_dispatch:               # también permite correrlo manualmente
 
 permissions:
   contents: read
-  id-token: write                   # necesario para OIDC
+  id-token: write                  # necesario para OIDC
 
 env:
   AWS_REGION: us-east-1
   S3_BUCKET: gsms-artifacts-727529936291-use1
   ROLE_ARN: arn:aws:iam::727529936291:role/GSMS-GitHubDevRole
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   deploy:
@@ -26,9 +30,9 @@ jobs:
     steps:
       - name: Contexto
         run: |
-          echo "Repo             : $GITHUB_REPOSITORY"
-          echo "Actor            : $GITHUB_ACTOR"
-          echo "DEV_NAME var     : '${{ vars.DEV_NAME }}'"
+          echo "Repo   : $GITHUB_REPOSITORY"
+          echo "Actor  : $GITHUB_ACTOR"
+          echo "DEV    : '${{ vars.DEV_NAME }}'"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,6 +65,9 @@ jobs:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: aws --version (debug)
+        run: aws --version
+
       - name: Calcular rutas de release
         id: paths
         run: |
@@ -70,7 +77,6 @@ jobs:
           echo "Publicando en: s3://${{ env.S3_BUCKET }}/dev/${{ vars.DEV_NAME }}/releases/${SHA}"
 
       # === Empaquetado/Sync de artefactos ===
-      # Ajusta estas secciones si cambias tu layout.
       - name: Subir src/
         run: |
           if [ -d src ]; then
@@ -91,11 +97,17 @@ jobs:
 
       - name: Subir extras (alembic, alembic.ini, requirements.txt)
         run: |
-          for item in alembic alembic.ini requirements.txt; do
-            if [ -e "$item" ]; then
-              aws s3 cp -r "$item" "${{ steps.paths.outputs.prefix }}/$item"
-            fi
-          done
+          # Carpeta alembic
+          if [ -d alembic ]; then
+            aws s3 sync alembic "${{ steps.paths.outputs.prefix }}/alembic" --delete
+          fi
+          # Archivos sueltos
+          if [ -f alembic.ini ]; then
+            aws s3 cp alembic.ini "${{ steps.paths.outputs.prefix }}/alembic.ini"
+          fi
+          if [ -f requirements.txt ]; then
+            aws s3 cp requirements.txt "${{ steps.paths.outputs.prefix }}/requirements.txt"
+          fi
 
       - name: Actualizar SSM package_url del dev
         run: |
@@ -109,3 +121,10 @@ jobs:
       - name: Salida final
         run: |
           echo "Release prefix: ${{ steps.paths.outputs.prefix }}"
+
+  # Job de prod explícitamente deshabilitado para repos DEV
+  ec2_deploy_prod:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deshabilitado en repos DEV"
