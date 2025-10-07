@@ -1,5 +1,6 @@
 # src/Core/settings.py
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 
 """
 Application Settings Module
@@ -29,21 +30,23 @@ class Settings(BaseSettings):
     # Mandatory: Must be provided via environment variable
     DATABASE_URL: str
 
-    # --- BEGIN: UDP / broadcasters on/off from env -----------------
-    import os
+    # --------------------------
+    # UDP / Broadcasters
+    # --------------------------
+    # Pydantic interpreta "0/1/true/false/no/off" correctamente
+    DISABLE_UDP: bool = False
+    UDP_ENABLED: bool = True
+    BROADCASTER_ENABLE: bool = True
 
-    def _truthy(name: str, default: bool) -> bool:
-        v = os.getenv(name, "")
-        if v == "":   # sin variable => usa el default que definas
-            return default
-        return str(v).strip().lower() not in ("0", "false", "no", "off")
-
-    # Si pones DISABLE_UDP=1 -> UDP_ENABLED=False
-    UDP_ENABLED = _truthy("DISABLE_UDP", True) and not _truthy("DISABLE_UDP", False)
-
-    # Si además quieres apagar los broadcasters al desactivar UDP:
-    BROADCASTER_ENABLE = _truthy("BROADCASTER_ENABLE", True) and UDP_ENABLED
-    # --- END -------------------------------------------------------
+    @model_validator(mode="after")
+    def _cohere_udp_flags(self):
+        # Semántica deseada:
+        # - Si DISABLE_UDP=true/1 => UDP_ENABLED=False
+        # - Si DISABLE_UDP=false/0/ausente => UDP_ENABLED=True
+        self.UDP_ENABLED = not bool(self.DISABLE_UDP)
+        # Si UDP está apagado, apaga broadcasters siempre
+        self.BROADCASTER_ENABLE = bool(self.BROADCASTER_ENABLE and self.UDP_ENABLED)
+        return self
 
     # --------------------------
     # Pydantic Settings Behavior
