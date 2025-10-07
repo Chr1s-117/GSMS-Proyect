@@ -1,6 +1,6 @@
 # src/Core/settings.py
-
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 
 """
 Application Settings Module
@@ -31,11 +31,23 @@ class Settings(BaseSettings):
     DATABASE_URL: str
 
     # --------------------------
-    # Feature Flags / Service Configuration
+    # UDP / Broadcasters
     # --------------------------
-    UDP_ENABLED: bool = True             # Enable UDP server
-    DDNS_ENABLED: bool = False           # Enable DDNS service (AWS doesn't need it)
-    BROADCASTER_ENABLE: bool = True      # Enable GPS broadcaster
+    # Pydantic interpreta "0/1/true/false/no/off" correctamente
+    DISABLE_UDP: bool = False
+    UDP_ENABLED: bool = True
+    DDNS_ENABLED: bool = False
+    BROADCASTER_ENABLE: bool = True
+
+    @model_validator(mode="after")
+    def _cohere_udp_flags(self):
+        # Semántica deseada:
+        # - Si DISABLE_UDP=true/1 => UDP_ENABLED=False
+        # - Si DISABLE_UDP=false/0/ausente => UDP_ENABLED=True
+        self.UDP_ENABLED = not bool(self.DISABLE_UDP)
+        # Si UDP está apagado, apaga broadcasters siempre
+        self.BROADCASTER_ENABLE = bool(self.BROADCASTER_ENABLE and self.UDP_ENABLED)
+        return self
 
     # --------------------------
     # Pydantic Settings Behavior
