@@ -1,0 +1,111 @@
+name: Deploy Dev (per-developer)
+
+on:
+  push:
+    branches: [ "main" ]           # despliega cuando se hace push a main del repo dev
+  workflow_dispatch:                # permite ejecutarlo manualmente
+
+permissions:
+  contents: read
+  id-token: write                   # necesario para OIDC
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: gsms-artifacts-727529936291-use1
+  ROLE_ARN: arn:aws:iam::727529936291:role/GSMS-GitHubDevRole
+
+jobs:
+  deploy:
+    # Solo corre si el repo tiene definida la variable DEV_NAME
+    if: ${{ vars.DEV_NAME != '' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev-${{ vars.DEV_NAME }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Contexto
+        run: |
+          echo "Repo             : $GITHUB_REPOSITORY"
+          echo "Actor            : $GITHUB_ACTOR"
+          echo "DEV_NAME var     : '${{ vars.DEV_NAME }}'"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Defensa adicional: cruzamos DEV_NAME con el repo esperado
+      - name: Validar DEV_NAME vs repos permitidos
+        run: |
+          DEV="${{ vars.DEV_NAME }}"
+          REPO="${GITHUB_REPOSITORY}"
+          case "$DEV" in
+            chris)
+              test "$REPO" = "Chr1s-117/GSMS-Proyect-develop-chris" \
+                || { echo "DEV_NAME=chris pero repo es $REPO"; exit 78; }
+              ;;
+            laura)
+              test "$REPO" = "LMSC2112/GSMS-Proyect-develop-laura" \
+                || { echo "DEV_NAME=laura pero repo es $REPO"; exit 78; }
+              ;;
+            jose)
+              test "$REPO" = "MendozaJose2001/GSMS-Proyect-develop-jose" \
+                || { echo "DEV_NAME=jose pero repo es $REPO"; exit 78; }
+              ;;
+            *)
+              echo "DEV_NAME desconocido: $DEV"; exit 78;;
+          esac
+
+      - name: Credenciales AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Calcular rutas de release
+        id: paths
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "prefix=s3://${{ env.S3_BUCKET }}/dev/${{ vars.DEV_NAME }}/releases/${SHA}" >> $GITHUB_OUTPUT
+          echo "Publicando en: s3://${{ env.S3_BUCKET }}/dev/${{ vars.DEV_NAME }}/releases/${SHA}"
+
+      # === Empaquetado/Sync de artefactos ===
+      # Ajusta estas secciones si cambias tu layout.
+      - name: Subir src/
+        run: |
+          if [ -d src ]; then
+            aws s3 sync src "${{ steps.paths.outputs.prefix }}/src" --delete
+          fi
+
+      - name: Subir front/
+        run: |
+          if [ -d front ]; then
+            aws s3 sync front "${{ steps.paths.outputs.prefix }}/front" --delete
+          fi
+
+      - name: Subir deploy/ (opcional)
+        run: |
+          if [ -d deploy ]; then
+            aws s3 sync deploy "${{ steps.paths.outputs.prefix }}/deploy" --delete
+          fi
+
+      - name: Subir extras (alembic, alembic.ini, requirements.txt)
+        run: |
+          for item in alembic alembic.ini requirements.txt; do
+            if [ -e "$item" ]; then
+              aws s3 cp -r "$item" "${{ steps.paths.outputs.prefix }}/$item"
+            fi
+          done
+
+      - name: Actualizar SSM package_url del dev
+        run: |
+          aws ssm put-parameter \
+            --name "/gsms/dev/${{ vars.DEV_NAME }}/app/package_url" \
+            --value "${{ steps.paths.outputs.prefix }}" \
+            --type String \
+            --overwrite
+          echo "SSM OK: /gsms/dev/${{ vars.DEV_NAME }}/app/package_url -> ${{ steps.paths.outputs.prefix }}"
+
+      - name: Salida final
+        run: |
+          echo "Release prefix: ${{ steps.paths.outputs.prefix }}"
