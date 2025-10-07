@@ -3,6 +3,8 @@
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 import os
@@ -14,6 +16,11 @@ from src.Services.ddns import start_ddns_service
 from src.Services.gps_broadcaster import start_gps_broadcaster
 from src.Services.response_broadcaster import start_response_broadcaster
 from src.Core import log_ws, gps_ws, request_ws, response_ws 
+
+ROOT_PATH = os.getenv("ROOT_PATH", "").strip()
+if ROOT_PATH and not ROOT_PATH.startswith("/"):
+    ROOT_PATH = "/" + ROOT_PATH
+ROOT_PATH = ROOT_PATH.rstrip("/")  # "/dev/chris/" -> "/dev/chris"
 
 # ------------------------------------------------------------
 # Utility function to parse comma-separated origins
@@ -100,6 +107,25 @@ app = FastAPI(
     version=settings.PROJECT_VERSION,
     lifespan=lifespan
 )
+
+# --- Middleware ---
+class StripPrefixMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, prefix: str):
+        super().__init__(app)
+        self.prefix = (prefix or "").rstrip("/")
+
+    async def dispatch(self, request, call_next):
+        if self.prefix:
+            p = request.url.path
+            # /dev/chris ->  /dev/chris/ 
+            if p == self.prefix:
+                return RedirectResponse(url=self.prefix + "/", status_code=307)
+            if p.startswith(self.prefix + "/"):
+                request.scope["path"] = p[len(self.prefix):] or "/"
+        return await call_next(request)
+
+app.add_middleware(StripPrefixMiddleware, prefix=ROOT_PATH)
+
 
 # ------------------------------------------------------------
 # Add CORS middleware for HTTP requests
