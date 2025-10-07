@@ -32,6 +32,7 @@ env:
 
 jobs:
   deploy:
+    if: ${{ github.repository == 'Chr1s-117/GSMS-Proyect' }}
     runs-on: ubuntu-latest
 
     steps:
