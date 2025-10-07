@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # Pydantic interpreta "0/1/true/false/no/off" correctamente
     DISABLE_UDP: bool = False
     UDP_ENABLED: bool = True
+    DDNS_ENABLED: bool = False
     BROADCASTER_ENABLE: bool = True
 
     @model_validator(mode="after")
