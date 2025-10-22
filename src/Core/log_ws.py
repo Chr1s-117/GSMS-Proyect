@@ -1,8 +1,9 @@
 # src/Core/log_ws.py
 
 from typing import Dict, Any
-from .wsBase import WebSocketManager
 from fastapi import WebSocket
+from .wsBase import WebSocketManager
+
 
 class LogWebSocketManager(WebSocketManager):
     """
