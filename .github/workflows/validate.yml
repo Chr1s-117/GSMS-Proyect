@@ -1,4 +1,4 @@
-name: Validate PR (premerge)
+name: Validate PR
 
 on:
   pull_request:
@@ -6,15 +6,69 @@ on:
 
 permissions:
   contents: read
-  deployments: write
+  pull-requests: write
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    environment: premerge   # <- crea el Deployment requerido por tu regla
+    
     steps:
-      - uses: actions/checkout@v4
-      - name: Quick checks
+      - name: 📦 Checkout Code
+        uses: actions/checkout@v4
+      
+      # ============================================
+      # Python Backend Validation
+      # ============================================
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 📚 Install Dependencies
         run: |
-          echo "lint ok"
-          echo "build ok"
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: ✅ Validate Python Syntax
+        run: |
+          echo "Validando sintaxis de Python..."
+          python -m py_compile src/main.py
+          
+          for file in src/**/*.py; do
+            [ -f "$file" ] && python -m py_compile "$file"
+          done
+          
+          echo "✅ Python syntax OK"
+      
+      - name: 🔍 Lint Python (Optional)
+        run: |
+          pip install flake8
+          flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+      
+      # ============================================
+      # Frontend Validation
+      # ============================================
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: front/package-lock.json
+      
+      - name: 📦 Install Frontend Dependencies
+        working-directory: front
+        run: npm ci
+      
+      - name: 🏗️ Build Frontend
+        working-directory: front
+        run: npm run build -- --configuration production
+      
+      - name: ✅ Validation Complete
+        run: |
+          echo "════════════════════════════════════════"
+          echo "✅ PR VALIDATION PASSED"
+          echo "════════════════════════════════════════"
+          echo "Backend: ✅ Python syntax OK"
+          echo "Frontend: ✅ Angular build OK"
+          echo "════════════════════════════════════════"

@@ -1,19 +1,86 @@
-# Web Framework y Servidor
+# ============================================
+# GSMS Backend - Python 3.11+
+# GPS Tracking Service with Multi-Device Support & Geofences
+# ============================================
+
+# ====================================================
+# Core Framework & Server
+# ====================================================
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
-# Base de Datos y Migraciones
-SQLAlchemy==2.0.43
-alembic==1.16.5
-psycopg2-binary==2.9.10
-aiosqlite==0.20.0
-
-# Configuración y Validación
 pydantic==2.11.7
-pydantic-settings==2.1.0
-# Otras Utilidades
-requests==2.31.0
-Jinja2==3.1.3
+pydantic-settings==2.5.2
 
-# Para instalar dependencias
-# pip install -r requirements.txt
-# Si hay problemas para usar comandos y dependencias, considere usar el comando Python -m <COMANDO>
+# ====================================================
+# Database & ORM (PostgreSQL + PostGIS)
+# ====================================================
+sqlalchemy==2.0.43
+psycopg2-binary==2.9.10
+alembic==1.16.5
+
+# ====================================================
+# Geospatial Libraries (PostGIS Integration)
+# ====================================================
+# GeoAlchemy2: SQLAlchemy extension for PostGIS
+geoalchemy2==0.15.2
+
+# Shapely: Geometric operations and validation
+shapely==2.0.6
+
+# GeoPandas: GeoJSON file reading/writing for geofence import
+geopandas==0.14.4
+
+# Fiona: GeoJSON/Shapefile I/O (dependency of GeoPandas)
+fiona==1.9.6
+
+# Pyproj: Coordinate system transformations (CRS reprojection)
+pyproj==3.6.1
+
+# ====================================================
+# Environment & Configuration
+# ====================================================
+# Python-dotenv: Load environment variables from .env files
+python-dotenv==1.0.1
+
+# ====================================================
+# File Upload Support
+# ====================================================
+# Python-multipart: Multipart form data parsing (for geofence import)
+python-multipart==0.0.12
+
+# ====================================================
+# HTTP Client (for external services)
+# ====================================================
+# Requests: HTTP library (used in DDNS service if enabled)
+requests==2.31.0
+
+# ====================================================
+# Optional: Development & Testing (uncomment if needed)
+# ====================================================
+# pytest==7.4.0
+# pytest-asyncio==0.21.0
+# httpx==0.25.0  # For async HTTP testing
+
+# ====================================================
+# Installation Instructions
+# ====================================================
+# 1. Create virtual environment:
+#    python3.11 -m venv venv
+#
+# 2. Activate virtual environment:
+#    source venv/bin/activate  (Linux/Mac)
+#    .\venv\Scripts\activate   (Windows)
+#
+# 3. Install dependencies:
+#    pip install -r requirements.txt
+#
+# 4. Verify installation:
+#    pip list
+#
+# ====================================================
+# Notes
+# ====================================================
+# - Python 3.11+ required
+# - PostgreSQL 14+ with PostGIS extension required
+# - Use 'python -m pip install ...' if pip command fails
+# - Update dependencies: pip install --upgrade -r requirements.txt

@@ -7,11 +7,11 @@ This service encapsulates the logic for determining if a GPS point is inside,
 entering, or exiting geofences. It maintains state awareness by comparing
 current GPS position with previous position to detect transitions.
 
-Key features:
+Key Features:
 - Real-time point-in-polygon detection using PostGIS spatial queries
 - Event detection (entry, exit, inside) based on state transitions
 - Handles multiple overlapping geofences (returns most specific/smallest area)
-- Optimized queries using spatial indexes
+- Optimized queries using spatial indexes (GIST)
 - Thread-safe singleton pattern
 
 Event Types:
@@ -21,22 +21,54 @@ Event Types:
 - None: GPS remains outside all geofences (no state change)
 
 State Transition Matrix:
-    Previous → Current     | Event Type
-    ----------------------|------------
-    None → Geofence A      | entry
-    Geofence A → None      | exit
-    Geofence A → Geofence A| inside
-    Geofence A → Geofence B| entry (EXIT for A handled in UDP)
-    None → None            | None (no event)
+    Previous State  → Current State    | Event Type   | Action
+    ----------------|--------------------|--------------|--------
+    None            → Geofence A        | entry        | Log entry event
+    Geofence A      → None              | exit         | Log exit event
+    Geofence A      → Geofence A        | inside       | No log (silent)
+    Geofence A      → Geofence B        | entry        | Exit A + Enter B (handled in UDP)
+    None            → None              | None         | No event
+
+PostGIS Usage:
+    - ST_GeogFromText: Convert WKT POINT to Geography type
+    - ST_Intersects: Check if point intersects polygon (spherical geometry)
+    - ST_Area: Calculate spherical area for sorting by specificity
+    - GIST Index: Spatial index on geometry column for fast lookup
+
+Performance:
+    - Typical query time: <5ms for 100+ active geofences
+    - Uses idx_geofences_geometry spatial index
+    - Returns only smallest matching geofence (most specific)
+
+Usage:
+    from src.Services.geofence_detector import geofence_detector
+    
+    event = geofence_detector.check_point(
+        db=db,
+        device_id="TRUCK-001",
+        lat=10.9878,
+        lon=-74.7889,
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    if event:
+        if event['event_type'] == 'entry':
+            print(f"Device entered {event['name']}")
+        elif event['event_type'] == 'exit':
+            print(f"Device exited geofence")
 """
 
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from src.Repositories.gps_data import get_last_gps_row_by_device
 from src.Models.geofence import Geofence
 
+
+# ==========================================================
+# 📌 Geofence Detector Class
+# ==========================================================
 
 class GeofenceDetector:
     """
@@ -47,12 +79,14 @@ class GeofenceDetector:
     2. Detect state transitions (entry/exit/inside)
     3. Handle overlapping geofences (selects smallest area)
     
-    Usage:
-        detector = GeofenceDetector()
-        event = detector.check_point(db, "TRUCK-001", 10.9878, -74.7889, timestamp)
-        
-        if event:
-            print(f"Event: {event['event_type']} in {event['name']}")
+    Thread Safety:
+        - Read-only operations (no internal state)
+        - Safe to call from multiple threads simultaneously
+        - Database session is passed as parameter (no shared state)
+    
+    Singleton Usage:
+        Use the global `geofence_detector` instance:
+        from src.Services.geofence_detector import geofence_detector
     """
 
     def check_point(
@@ -80,12 +114,12 @@ class GeofenceDetector:
         Returns:
             Dictionary with geofence event information, or None if no event:
             {
-                "id": "warehouse-001",           # Geofence ID (None for exit events)
-                "name": "Main Warehouse",        # Geofence name (None for exit events)
+                "id": "warehouse-001",           # Geofence ID (None for exit)
+                "name": "Main Warehouse",        # Geofence name (None for exit)
                 "event_type": "entry" | "exit" | "inside"
             }
             
-        State transition logic:
+        State Transition Logic:
             - Previous: None,        Current: Geofence A  → entry
             - Previous: Geofence A,  Current: None        → exit
             - Previous: Geofence A,  Current: Geofence A  → inside
@@ -96,16 +130,26 @@ class GeofenceDetector:
             event = detector.check_point(db, "TRUCK-001", 10.9878, -74.7889, now)
             
             # Entry event
-            # {"id": "warehouse-001", "name": "Main Warehouse", "event_type": "entry"}
+            if event and event['event_type'] == 'entry':
+                print(f"Entered: {event['name']}")
             
             # Exit event
-            # {"id": None, "name": None, "event_type": "exit"}
+            if event and event['event_type'] == 'exit':
+                print("Exited geofence")
             
             # Inside (no state change)
-            # {"id": "warehouse-001", "name": "Main Warehouse", "event_type": "inside"}
+            if event and event['event_type'] == 'inside':
+                print(f"Still inside: {event['name']}")
             
             # Outside (no event)
-            # None
+            if event is None:
+                print("Outside all geofences (no change)")
+        
+        Performance:
+            - 2 database queries:
+              1. Find current geofence (spatial query with GIST index)
+              2. Get previous GPS (indexed by DeviceID)
+            - Total time: <10ms typical
         """
 
         # ========================================
@@ -183,16 +227,30 @@ class GeofenceDetector:
             Dictionary with geofence id and name, or None if outside all geofences:
             {"id": "warehouse-001", "name": "Main Warehouse"}
         
-        Query explanation:
-            - ST_GeogFromText creates a Geography POINT from WKT
-            - ST_Intersects checks if point intersects with geofence polygon
-            - ST_Area calculates spherical area (for sorting by smallest)
-            - ORDER BY area ASC ensures most specific geofence is returned
-            - LIMIT 1 returns only the smallest matching geofence
+        Query Explanation:
+            - ST_GeogFromText: Creates Geography POINT from WKT
+              Format: POINT(longitude latitude) - Note: lon first, then lat!
+            
+            - ST_Intersects: Checks if point intersects with geofence polygon
+              Returns TRUE if point is inside or on boundary
+            
+            - ST_Area: Calculates spherical area in square meters
+              Used for sorting to get most specific geofence
+            
+            - ORDER BY area ASC: Returns smallest geofence first
+              Ensures most specific zone is selected when overlapping
+            
+            - LIMIT 1: Returns only the smallest matching geofence
         
         Performance:
             - Uses idx_geofences_geometry spatial index (GIST)
             - Typical query time: <5ms for 100+ geofences
+            - Complexity: O(log n) with spatial index
+        
+        Error Handling:
+            - Catches and logs PostGIS errors
+            - Returns None on error (device considered outside all geofences)
+            - Prevents crash if PostGIS extension is missing
         """
 
         # Raw SQL query using PostGIS functions
@@ -221,7 +279,8 @@ class GeofenceDetector:
             
         except Exception as e:
             # Log error but don't crash - return None to indicate no geofence
-            print(f"[GEOFENCE] Error in _find_containing_geofence: {e}")
+            print(f"[GEOFENCE] ❌ Error in _find_containing_geofence: {e}")
+            print(f"[GEOFENCE] ℹ️  Lat={lat}, Lon={lon}")
             return None
 
     def _get_geofence_by_id(
@@ -245,7 +304,12 @@ class GeofenceDetector:
         
         Example:
             info = detector._get_geofence_by_id(db, "warehouse-001")
-            # {"id": "warehouse-001", "name": "Main Warehouse"}
+            if info:
+                print(f"Geofence: {info['name']}")
+        
+        Error Handling:
+            - Returns None if geofence not found
+            - Catches and logs database errors
         """
         try:
             geofence = db.query(Geofence).filter(
@@ -260,7 +324,7 @@ class GeofenceDetector:
             return None
             
         except Exception as e:
-            print(f"[GEOFENCE] Error in _get_geofence_by_id: {e}")
+            print(f"[GEOFENCE] ❌ Error in _get_geofence_by_id: {e}")
             return None
 
     def get_all_containing_geofences(
@@ -268,17 +332,18 @@ class GeofenceDetector:
         db: Session,
         lat: float,
         lon: float
-    ) -> list[Dict[str, str]]:
+    ) -> List[Dict[str, str]]:
         """
         Get ALL geofences that contain a GPS point (for overlapping geofences).
         
         Unlike _find_containing_geofence which returns only the smallest,
         this method returns all overlapping geofences sorted by area.
         
-        Useful for:
-        - Analytics (track all zones a device is in)
-        - Complex business rules (check multiple zone types)
-        - Debugging overlapping geofences
+        Use Cases:
+        - Analytics: Track all zones a device is in simultaneously
+        - Complex business rules: Check multiple zone types (e.g., "delivery zone" AND "city center")
+        - Debugging: Identify overlapping geofences that might cause conflicts
+        - Reporting: Show all relevant zones for a GPS point
         
         Args:
             db: SQLAlchemy session
@@ -286,16 +351,28 @@ class GeofenceDetector:
             lon: GPS longitude (-180 to 180)
             
         Returns:
-            List of geofence dictionaries (empty list if outside all):
+            List of geofence dictionaries sorted by area (smallest first):
             [
                 {"id": "warehouse-001", "name": "Main Warehouse", "type": "warehouse"},
                 {"id": "industrial-zone-1", "name": "Industrial Zone", "type": "zone"}
             ]
+            
+            Empty list if outside all geofences.
         
         Example:
             geofences = detector.get_all_containing_geofences(db, 10.9878, -74.7889)
-            for gf in geofences:
-                print(f"Inside: {gf['name']} ({gf['type']})")
+            
+            if not geofences:
+                print("Outside all geofences")
+            else:
+                print(f"Inside {len(geofences)} geofence(s):")
+                for gf in geofences:
+                    print(f"  - {gf['name']} ({gf['type']})")
+        
+        Performance:
+            - Uses same spatial index as _find_containing_geofence
+            - Returns all matches instead of LIMIT 1
+            - Typical query time: <10ms for 100+ geofences
         """
         query = text("""
             SELECT id, name, type, ST_Area(geometry) AS area
@@ -321,19 +398,26 @@ class GeofenceDetector:
             ]
             
         except Exception as e:
-            print(f"[GEOFENCE] Error in get_all_containing_geofences: {e}")
+            print(f"[GEOFENCE] ❌ Error in get_all_containing_geofences: {e}")
             return []
 
 
 # ==========================================================
-# Global Singleton Instance
+# 📌 Global Singleton Instance
 # ==========================================================
+
 """
 Singleton instance for global access across the application.
+
+This instance is thread-safe because GeofenceDetector has no internal state.
+All state is passed via parameters (db session, device_id, coordinates).
 
 Usage:
     from src.Services.geofence_detector import geofence_detector
     
     event = geofence_detector.check_point(db, device_id, lat, lon, timestamp)
+    
+    if event:
+        print(f"Event: {event['event_type']} in {event.get('name', 'N/A')}")
 """
 geofence_detector = GeofenceDetector()
