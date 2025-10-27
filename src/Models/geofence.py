@@ -164,8 +164,7 @@ class Geofence(Base):
     # ============================================================
     # Flexible Metadata Storage
     # ============================================================
-    extra_metadata = Column(
-        'metadata',  # Column name in database
+    metadata = Column(
         JSONB, 
         nullable=True,
         doc=(
