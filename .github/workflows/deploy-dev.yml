@@ -129,76 +129,34 @@ jobs:
           fi
 
       # ============================================
-      # 4. Frontend Check (CONDICIONAL)
+      # 4. Frontend Check (PRECOMPILADO)
       # ============================================
-      - name: 🔍 Check if Frontend Exists
+      - name: 🔍 Check if Frontend Precompiled Exists
         id: check_frontend
         run: |
-          if [ -d "front" ] && [ -f "front/package.json" ]; then
+          if [ -d "front_deploy/browser" ]; then
             echo "frontend_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Frontend directory found at: front/"
-            echo "📦 package.json exists"
-            
-            if [ -f "front/package-lock.json" ]; then
-              echo "🔒 package-lock.json exists"
-            else
-              echo "⚠️  WARNING: package-lock.json not found"
-            fi
+            echo "✅ Precompiled frontend found at: front_deploy/browser/"
+            echo "📂 Contenido:"
+            ls -lh front_deploy/browser/ | head -10
           else
             echo "frontend_exists=false" >> $GITHUB_OUTPUT
-            echo "⚠️  WARNING: Frontend directory not found"
-            echo "    Expected: front/package.json"
+            echo "⚠️  WARNING: Precompiled frontend not found"
+            echo "    Expected: front_deploy/browser/"
           fi
-
-      - name: 🟢 Setup Node.js
-        if: steps.check_frontend.outputs.frontend_exists == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: front/package-lock.json
-
-      - name: 📦 Install Frontend Dependencies
-        if: steps.check_frontend.outputs.frontend_exists == 'true'
-        working-directory: front
-        run: |
-          echo "Instalando dependencias de Angular..."
-          npm ci
-          echo "✅ Dependencias instaladas"
-
-      - name: 🏗️ Build Frontend (Production)
-        if: steps.check_frontend.outputs.frontend_exists == 'true'
-        working-directory: front
-        run: |
-          echo "Compilando frontend Angular para producción..."
-          npm run build -- \
-            --configuration production \
-            --base-href="/dev/${{ vars.DEV_NAME }}/" \
-            --output-path=dist/browser
-          
-          echo "✅ Frontend compilado"
-          
-          # Verificar que el build existe
-          if [ ! -d "dist/browser" ]; then
-            echo "❌ ERROR: No se encontró dist/browser"
-            exit 1
-          fi
-          
-          echo "📂 Contenido de dist/browser:"
-          ls -lh dist/browser/
 
       - name: ⚠️ Frontend Skip Notice
         if: steps.check_frontend.outputs.frontend_exists == 'false'
         run: |
           echo ""
           echo "════════════════════════════════════════"
-          echo "⚠️  FRONTEND BUILD SKIPPED"
+          echo "⚠️  FRONTEND UPLOAD SKIPPED"
           echo "════════════════════════════════════════"
-          echo "Reason: Frontend directory not found"
-          echo "Expected location: front/package.json"
+          echo "Reason: Precompiled frontend not found"
+          echo "Expected location: front_deploy/browser/"
           echo ""
           echo "📝 This is normal if:"
-          echo "   • You haven't added the Angular frontend yet"
+          echo "   • You haven't added the precompiled frontend yet"
           echo "   • This is a backend-only repository"
           echo ""
           echo "✅ Backend-only deployment will proceed"
@@ -274,27 +232,27 @@ jobs:
           echo "✅ Archivos de configuración subidos"
 
       # ============================================
-      # 8. Upload Frontend Compilado (CONDICIONAL)
+      # 8. Upload Frontend Precompilado (CONDICIONAL)
       # ============================================
-      - name: ⬆️ Upload Frontend (Compilado)
+      - name: ⬆️ Upload Frontend (Precompilado)
         if: steps.check_frontend.outputs.frontend_exists == 'true'
         run: |
-          echo "Subiendo frontend compilado..."
-          aws s3 sync front/dist/browser "${{ steps.paths.outputs.prefix }}/front_deploy/browser" \
+          echo "Subiendo frontend precompilado..."
+          aws s3 sync front_deploy/browser "${{ steps.paths.outputs.prefix }}/front_deploy/browser" \
             --delete \
             --cache-control "public, max-age=31536000, immutable" \
             --exclude "index.html"
           
           # index.html sin cache (para actualizaciones inmediatas)
-          aws s3 cp front/dist/browser/index.html "${{ steps.paths.outputs.prefix }}/front_deploy/browser/index.html" \
+          aws s3 cp front_deploy/browser/index.html "${{ steps.paths.outputs.prefix }}/front_deploy/browser/index.html" \
             --cache-control "no-cache, no-store, must-revalidate"
           
-          echo "✅ Frontend subido"
+          echo "✅ Frontend precompilado subido"
 
       - name: ℹ️ Frontend Upload Skipped
         if: steps.check_frontend.outputs.frontend_exists == 'false'
         run: |
-          echo "⏭️  Skipping frontend upload (no frontend build)"
+          echo "⏭️  Skipping frontend upload (no precompiled frontend found)"
 
       # ============================================
       # 9. Upload Data (Geofences)
@@ -341,7 +299,7 @@ jobs:
           echo "📦 Componentes Deployados:"
           if [ "${{ steps.check_frontend.outputs.frontend_exists }}" == "true" ]; then
             echo "   ✅ Backend (Python/FastAPI)"
-            echo "   ✅ Frontend (Angular)"
+            echo "   ✅ Frontend (Angular Precompilado)"
             echo "   ✅ Geofences (data/)"
           else
             echo "   ✅ Backend (Python/FastAPI)"
@@ -355,7 +313,7 @@ jobs:
           echo ""
           echo "📝 Siguiente paso:"
           echo "   SSH a EC2 y ejecutar:"
-          echo "   sudo systemctl restart gsms-backend-dev-${{ vars.DEV_NAME }}.service"
+          echo "   sudo systemctl restart gsms-backend-dev@${{ vars.DEV_NAME }}.service"
           echo "════════════════════════════════════════"
 
   # ============================================

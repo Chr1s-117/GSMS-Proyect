@@ -1,3 +1,4 @@
+# src/Services/geofence_importer.py
 """
 Geofence Importer Service
 Imports geofences from GeoJSON files into PostgreSQL/PostGIS
@@ -126,7 +127,7 @@ class GeofenceImporter:
                     if existing:
                         # Update existing geofence
                         existing.geometry = f"SRID=4326;{wkt}"
-                        existing.geofence_type = geofence_type
+                        existing.type = geofence_type  # ✅ CORREGIDO: type (no geofence_type)
                         
                         if description:
                             existing.description = description
@@ -138,7 +139,7 @@ class GeofenceImporter:
                         new_geofence = Geofence(
                             name=name,
                             geometry=f"SRID=4326;{wkt}",
-                            geofence_type=geofence_type,
+                            type=geofence_type,  # ✅ CORREGIDO: type (no geofence_type)
                             description=description
                         )
                         self.db.add(new_geofence)
@@ -194,7 +195,7 @@ class GeofenceImporter:
             query = self.db.query(Geofence)
             
             if geofence_type:
-                query = query.filter_by(geofence_type=geofence_type)
+                query = query.filter_by(type=geofence_type)  # ✅ CORREGIDO: type
             
             geofences = query.all()
 
@@ -224,7 +225,7 @@ class GeofenceImporter:
                         "properties": {
                             "id": geofence.id,
                             "name": geofence.name,
-                            "type": geofence.geofence_type,
+                            "type": geofence.type,  # ✅ CORREGIDO: type
                             "description": geofence.description,
                             "created_at": geofence.created_at.isoformat() if geofence.created_at else None,
                             "updated_at": geofence.updated_at.isoformat() if geofence.updated_at else None
