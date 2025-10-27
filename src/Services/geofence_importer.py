@@ -10,6 +10,7 @@ Changes: Removed GeoPandas dependency, uses pure Shapely + JSON
 
 import json
 import logging
+import uuid  # ✅ AGREGADO
 from pathlib import Path
 from typing import Tuple, Optional
 from shapely.geometry import shape, mapping
@@ -121,13 +122,16 @@ class GeofenceImporter:
                     geofence_type = properties.get('type') or properties.get('TYPE') or default_type
                     description = properties.get('description') or properties.get('DESCRIPTION')
                     
+                    # ✅ GENERATE UNIQUE ID
+                    geofence_id = properties.get('id') or f"geofence_{uuid.uuid4().hex[:12]}"
+                    
                     # Check if geofence already exists
                     existing = self.db.query(Geofence).filter_by(name=name).first()
 
                     if existing:
                         # Update existing geofence
                         existing.geometry = f"SRID=4326;{wkt}"
-                        existing.type = geofence_type  # ✅ CORREGIDO: type (no geofence_type)
+                        existing.type = geofence_type
                         
                         if description:
                             existing.description = description
@@ -137,14 +141,15 @@ class GeofenceImporter:
                     else:
                         # Create new geofence
                         new_geofence = Geofence(
+                            id=geofence_id,  # ✅ EXPLICIT ID
                             name=name,
                             geometry=f"SRID=4326;{wkt}",
-                            type=geofence_type,  # ✅ CORREGIDO: type (no geofence_type)
+                            type=geofence_type,
                             description=description
                         )
                         self.db.add(new_geofence)
                         created += 1
-                        print(f"[GEOFENCE-IMPORTER] ✅ Created: {name}")
+                        print(f"[GEOFENCE-IMPORTER] ✅ Created: {name} (ID: {geofence_id})")
 
                 except Exception as e:
                     print(f"[GEOFENCE-IMPORTER] ❌ Error processing feature {idx}: {e}")
@@ -195,7 +200,7 @@ class GeofenceImporter:
             query = self.db.query(Geofence)
             
             if geofence_type:
-                query = query.filter_by(type=geofence_type)  # ✅ CORREGIDO: type
+                query = query.filter_by(type=geofence_type)
             
             geofences = query.all()
 
@@ -225,7 +230,7 @@ class GeofenceImporter:
                         "properties": {
                             "id": geofence.id,
                             "name": geofence.name,
-                            "type": geofence.type,  # ✅ CORREGIDO: type
+                            "type": geofence.type,
                             "description": geofence.description,
                             "created_at": geofence.created_at.isoformat() if geofence.created_at else None,
                             "updated_at": geofence.updated_at.isoformat() if geofence.updated_at else None
