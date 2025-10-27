@@ -52,7 +52,7 @@ from sqlalchemy.orm import Session
 from src.Controller.deps import get_DB
 from src.Repositories import geofence as geofence_repo
 from src.Schemas import geofence as geofence_schema
-from src.Services.geofence_importer import geofence_importer
+from src.Services.geofence_importer import GeofenceImporter
 
 # GeoAlchemy2 and Shapely (for PostGIS geometry handling)
 from geoalchemy2.shape import to_shape
@@ -709,8 +709,9 @@ async def import_geofences(
         print(f"[GEOFENCE-IMPORT] Mode: {mode}")
         
         # Import geofences using service
-        created, updated, skipped, failed = geofence_importer.import_from_file(
-            db, tmp_path, mode=mode
+        importer = GeofenceImporter(db)
+        created, updated, skipped, failed = importer.import_from_file(
+            str(tmp_path)
         )
         
         # Clean up temporary file

@@ -8,6 +8,7 @@ Changes: Removed GeoPandas dependency, uses pure Shapely + JSON
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Tuple, Optional
 from shapely.geometry import shape, mapping
@@ -16,6 +17,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.Models.geofence import Geofence
+
+# ============================================
+# Module-level logging
+# ============================================
+logger = logging.getLogger(__name__)
 
 
 class GeofenceImporter:
@@ -251,3 +257,25 @@ class GeofenceImporter:
         except Exception as e:
             print(f"[GEOFENCE-IMPORTER] ❌ Export failed: {e}")
             return False
+
+
+# ============================================
+# Global instance for backward compatibility
+# ============================================
+geofence_importer = None
+
+
+def init_geofence_importer(db: Session):
+    """
+    Initialize the global geofence_importer instance.
+    
+    Args:
+        db: SQLAlchemy database session
+    
+    Returns:
+        GeofenceImporter instance
+    """
+    global geofence_importer
+    geofence_importer = GeofenceImporter(db)
+    logger.info("[GEOFENCE-IMPORTER] ✅ Global instance initialized")
+    return geofence_importer

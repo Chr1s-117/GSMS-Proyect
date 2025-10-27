@@ -46,7 +46,8 @@ from src.Core import log_ws, gps_ws, request_ws, response_ws
 # Database and repositories (for geofence import)
 from src.DB.session import SessionLocal
 from src.Repositories.geofence import count_geofences
-from src.Services.geofence_importer import geofence_importer
+from src.Services.geofence_importer import GeofenceImporter
+from src.DB.database import get_db
 
 # DDNS service removed - no longer needed in current infrastructure
 # The server now uses static IP assigned by AWS EIP (Elastic IP)
@@ -133,10 +134,21 @@ async def lifespan(app: FastAPI):
     # Database Initialization: Import Geofences on First Run
     # ============================================================
     geofence_file = Path("data/curated/barranquilla_v1.geojson")
-    
-    if not geofence_file.exists():
-        print(f"[STARTUP] ⚠️  Geofence file not found at {geofence_file}")
-        print("[STARTUP] ⚠️  Skipping geofence import")
+    if geofence_file.exists():
+        try:
+            # Inicializar con una sesión de DB
+            db_session = next(get_db())
+            importer = GeofenceImporter(db_session)
+            
+            created, updated, skipped, failed = importer.import_from_file(
+                str(geofence_file)
+            )
+            
+            print(f"[GEOFENCE-STARTUP] ✅ Imported: {created} created, {updated} updated, {failed} failed")
+            
+            db_session.close()
+        except Exception as e:
+            print(f"[GEOFENCE-STARTUP] ⚠️  Could not import geofences: {e}")
     else:
         print("[STARTUP] 🗄️  Checking geofence database...")
         try:
