@@ -103,17 +103,14 @@ jobs:
           echo "Validando sintaxis de Python..."
           python -m py_compile src/main.py
           
-          # Validar Core
           for file in src/Core/*.py; do
             [ -f "$file" ] && python -m py_compile "$file"
           done
           
-          # Validar Services
           for file in src/Services/*.py; do
             [ -f "$file" ] && python -m py_compile "$file"
           done
           
-          # Validar Models
           for file in src/Models/*.py; do
             [ -f "$file" ] && python -m py_compile "$file"
           done
@@ -123,8 +120,6 @@ jobs:
       - name: 🗄️ Validate Alembic Migrations
         run: |
           echo "Validando migraciones de Alembic..."
-          
-          # Usar DB temporal para validar
           export DATABASE_URL="sqlite:///./test.db"
           
           if alembic check 2>&1 | grep -q "No new upgrade operations detected"; then
@@ -134,9 +129,29 @@ jobs:
           fi
 
       # ============================================
-      # 4. Build y Validación de Frontend Angular
+      # 4. Frontend Check (CONDICIONAL)
       # ============================================
+      - name: 🔍 Check if Frontend Exists
+        id: check_frontend
+        run: |
+          if [ -d "front" ] && [ -f "front/package.json" ]; then
+            echo "frontend_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Frontend directory found at: front/"
+            echo "📦 package.json exists"
+            
+            if [ -f "front/package-lock.json" ]; then
+              echo "🔒 package-lock.json exists"
+            else
+              echo "⚠️  WARNING: package-lock.json not found"
+            fi
+          else
+            echo "frontend_exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️  WARNING: Frontend directory not found"
+            echo "    Expected: front/package.json"
+          fi
+
       - name: 🟢 Setup Node.js
+        if: steps.check_frontend.outputs.frontend_exists == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -144,6 +159,7 @@ jobs:
           cache-dependency-path: front/package-lock.json
 
       - name: 📦 Install Frontend Dependencies
+        if: steps.check_frontend.outputs.frontend_exists == 'true'
         working-directory: front
         run: |
           echo "Instalando dependencias de Angular..."
@@ -151,6 +167,7 @@ jobs:
           echo "✅ Dependencias instaladas"
 
       - name: 🏗️ Build Frontend (Production)
+        if: steps.check_frontend.outputs.frontend_exists == 'true'
         working-directory: front
         run: |
           echo "Compilando frontend Angular para producción..."
@@ -169,6 +186,24 @@ jobs:
           
           echo "📂 Contenido de dist/browser:"
           ls -lh dist/browser/
+
+      - name: ⚠️ Frontend Skip Notice
+        if: steps.check_frontend.outputs.frontend_exists == 'false'
+        run: |
+          echo ""
+          echo "════════════════════════════════════════"
+          echo "⚠️  FRONTEND BUILD SKIPPED"
+          echo "════════════════════════════════════════"
+          echo "Reason: Frontend directory not found"
+          echo "Expected location: front/package.json"
+          echo ""
+          echo "📝 This is normal if:"
+          echo "   • You haven't added the Angular frontend yet"
+          echo "   • This is a backend-only repository"
+          echo ""
+          echo "✅ Backend-only deployment will proceed"
+          echo "════════════════════════════════════════"
+          echo ""
 
       # ============================================
       # 5. AWS Authentication
@@ -239,9 +274,10 @@ jobs:
           echo "✅ Archivos de configuración subidos"
 
       # ============================================
-      # 8. Upload Frontend Compilado a S3
+      # 8. Upload Frontend Compilado (CONDICIONAL)
       # ============================================
       - name: ⬆️ Upload Frontend (Compilado)
+        if: steps.check_frontend.outputs.frontend_exists == 'true'
         run: |
           echo "Subiendo frontend compilado..."
           aws s3 sync front/dist/browser "${{ steps.paths.outputs.prefix }}/front_deploy/browser" \
@@ -255,13 +291,18 @@ jobs:
           
           echo "✅ Frontend subido"
 
+      - name: ℹ️ Frontend Upload Skipped
+        if: steps.check_frontend.outputs.frontend_exists == 'false'
+        run: |
+          echo "⏭️  Skipping frontend upload (no frontend build)"
+
       # ============================================
       # 9. Upload Data (Geofences)
       # ============================================
-      - name: ⬆️ Upload Data Files (Optional)
+      - name: ⬆️ Upload Data Files (Geofences)
         run: |
           if [ -d data ]; then
-            echo "Subiendo archivos de datos..."
+            echo "Subiendo archivos de datos (geofences)..."
             aws s3 sync data "${{ steps.paths.outputs.prefix }}/data" --delete
             echo "✅ Data subida"
           else
@@ -297,9 +338,20 @@ jobs:
           echo "📦 Release ID: ${{ steps.paths.outputs.release_id }}"
           echo "📂 S3 Prefix: ${{ steps.paths.outputs.prefix }}"
           echo ""
-          echo "🔗 URLs de Deploy:"
-          echo "   Backend:  https://dassify.tech/dev/${{ vars.DEV_NAME }}/health"
-          echo "   Frontend: https://dassify.tech/dev/${{ vars.DEV_NAME }}/"
+          echo "📦 Componentes Deployados:"
+          if [ "${{ steps.check_frontend.outputs.frontend_exists }}" == "true" ]; then
+            echo "   ✅ Backend (Python/FastAPI)"
+            echo "   ✅ Frontend (Angular)"
+            echo "   ✅ Geofences (data/)"
+          else
+            echo "   ✅ Backend (Python/FastAPI)"
+            echo "   ⏭️  Frontend (no disponible)"
+            echo "   ✅ Geofences (data/)"
+          fi
+          echo ""
+          echo "🔗 URLs de Acceso:"
+          echo "   Backend Health: https://dassify.tech/dev/${{ vars.DEV_NAME }}/health"
+          echo "   Frontend:       https://dassify.tech/dev/${{ vars.DEV_NAME }}/"
           echo ""
           echo "📝 Siguiente paso:"
           echo "   SSH a EC2 y ejecutar:"
