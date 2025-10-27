@@ -1,86 +1,52 @@
 # ============================================
-# GSMS Backend - Python 3.11+
-# GPS Tracking Service with Multi-Device Support & Geofences
+# GSMS Backend - Python Dependencies
+# ============================================
+# Version: 2025-10-27
+# Python: 3.11+
 # ============================================
 
-# ====================================================
-# Core Framework & Server
-# ====================================================
+# ============================================
+# Core Framework
+# ============================================
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
+
+# ============================================
+# Database & ORM
+# ============================================
+SQLAlchemy==2.0.43
+alembic==1.16.5
+psycopg2-binary==2.9.10
+
+# ============================================
+# Data Validation & Settings
+# ============================================
 pydantic==2.11.7
 pydantic-settings==2.5.2
 
-# ====================================================
-# Database & ORM (PostgreSQL + PostGIS)
-# ====================================================
-sqlalchemy==2.0.43
-psycopg2-binary==2.9.10
-alembic==1.16.5
-
-# ====================================================
-# Geospatial Libraries (PostGIS Integration)
-# ====================================================
+# ============================================
+# Geospatial Support (PostGIS)
+# ============================================
 # GeoAlchemy2: SQLAlchemy extension for PostGIS
 geoalchemy2==0.15.2
 
-# Shapely: Geometric operations and validation
+# Shapely: Geometric operations (NO GDAL dependency)
 shapely==2.0.6
 
-# GeoPandas: GeoJSON file reading/writing for geofence import
-#geopandas==0.14.4
-
-# Fiona: GeoJSON/Shapefile I/O (dependency of GeoPandas)
-#fiona==1.9.6
-
-# Pyproj: Coordinate system transformations (CRS reprojection)
+# PyProj: Coordinate transformations
 pyproj==3.6.1
 
-# ====================================================
-# Environment & Configuration
-# ====================================================
-# Python-dotenv: Load environment variables from .env files
+# ❌ REMOVED: geopandas==0.14.4 (requires GDAL)
+# ❌ REMOVED: fiona==1.9.6 (requires GDAL)
+
+# ============================================
+# Utilities
+# ============================================
+# Environment variables
 python-dotenv==1.0.1
 
-# ====================================================
-# File Upload Support
-# ====================================================
-# Python-multipart: Multipart form data parsing (for geofence import)
+# File uploads
 python-multipart==0.0.12
 
-# ====================================================
-# HTTP Client (for external services)
-# ====================================================
-# Requests: HTTP library (used in DDNS service if enabled)
+# HTTP requests
 requests==2.31.0
-
-# ====================================================
-# Optional: Development & Testing (uncomment if needed)
-# ====================================================
-# pytest==7.4.0
-# pytest-asyncio==0.21.0
-# httpx==0.25.0  # For async HTTP testing
-
-# ====================================================
-# Installation Instructions
-# ====================================================
-# 1. Create virtual environment:
-#    python3.11 -m venv venv
-#
-# 2. Activate virtual environment:
-#    source venv/bin/activate  (Linux/Mac)
-#    .\venv\Scripts\activate   (Windows)
-#
-# 3. Install dependencies:
-#    pip install -r requirements.txt
-#
-# 4. Verify installation:
-#    pip list
-#
-# ====================================================
-# Notes
-# ====================================================
-# - Python 3.11+ required
-# - PostgreSQL 14+ with PostGIS extension required
-# - Use 'python -m pip install ...' if pip command fails
-# - Update dependencies: pip install --upgrade -r requirements.txt
