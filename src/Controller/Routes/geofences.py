@@ -142,9 +142,8 @@ def list_geofences(
     for g in geofences:
         by_type[g.type] = by_type.get(g.type, 0) + 1
     
-    # Serialize geofences (without geometry)
     geofences_list = [
-        geofence_schema.GeofenceGet.model_validate(geofence)
+        geofence_schema.GeofenceGet.model_validate(geofence, from_attributes=True)
         for geofence in geofences
     ]
     
@@ -230,7 +229,7 @@ def get_geofence(geofence_id: str, db: Session = Depends(get_DB)):
         geojson_geom = mapping(shapely_geom)
         
         # Serialize to Pydantic schema
-        geofence_dict = geofence_schema.GeofenceGet.model_validate(geofence).model_dump()
+        geofence_dict = geofence_schema.GeofenceGet.model_validate(geofence, from_attributes=True).model_dump()
         geofence_dict["geometry"] = geojson_geom
         
         return geofence_dict
@@ -589,7 +588,7 @@ def check_point_in_geofence(
     )
     
     geofences_list = [
-        geofence_schema.GeofenceGet.model_validate(geofence)
+        geofence_schema.GeofenceGet.model_validate(geofence, from_attributes=True)
         for geofence in geofences
     ]
     
