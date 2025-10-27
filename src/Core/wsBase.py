@@ -4,7 +4,6 @@ from fastapi import WebSocket
 import asyncio
 from typing import List, Optional, Dict, Any
 import json
-import threading
 
 
 class WebSocketManager:
@@ -17,12 +16,6 @@ class WebSocketManager:
     - Provide thread-safe message sending from external (non-async) threads.
     - Optional keep-alive support for long-lived connections.
 
-    Improvements:
-    - Thread-safe access to client list using a Lock.
-    - Register adds client before ws.accept() to avoid race gap.
-    - Safer unregister (idempotent).
-    - Prepared for future alive-check (ping/pong).
-
     Subclasses should override `handle_message()` to implement
     custom logic for processing incoming client messages.
     """
@@ -34,9 +27,6 @@ class WebSocketManager:
         # Reference to the main FastAPI event loop
         # Required for safely sending messages from non-async threads
         self.main_loop: Optional[asyncio.AbstractEventLoop] = None
-
-        # Lock to protect access to self.clients across threads
-        self._lock = threading.Lock()
 
     def set_main_loop(self, loop: asyncio.AbstractEventLoop):
         """
@@ -53,34 +43,20 @@ class WebSocketManager:
 
         Args:
             ws: The WebSocket connection to register.
-
-        Notes:
-            - Client is added to the list BEFORE accepting to avoid timing gaps.
-            - If handshake fails, client is automatically cleaned up.
         """
-        with self._lock:
-            if ws not in self.clients:
-                self.clients.append(ws)
-
-        try:
-            await ws.accept()
-            print(f"[WSBase] Client registered. Total clients: {len(self.clients)}")
-        except Exception:
-            # If handshake fails, ensure cleanup
-            self.unregister(ws)
-            raise
+        await ws.accept()
+        self.clients.append(ws)
+        print(f"[WSBase] Client registered. Total clients: {len(self.clients)}")
 
     def unregister(self, ws: WebSocket):
         """
-        Unregister a WebSocket client safely (idempotent).
+        Unregister a WebSocket client.
 
         Safe to call if the client disconnects or fails.
-        Multiple calls with the same WebSocket are handled gracefully.
         """
-        with self._lock:
-            if ws in self.clients:
-                self.clients.remove(ws)
-                print(f"[WSBase] Client unregistered. Total clients: {len(self.clients)}")
+        if ws in self.clients:
+            self.clients.remove(ws)
+            print(f"[WSBase] Client unregistered. Total clients: {len(self.clients)}")
 
     @property
     def has_clients(self) -> bool:
@@ -89,13 +65,8 @@ class WebSocketManager:
 
         Returns:
             True if at least one client is connected, False otherwise.
-
-        Notes:
-            - This only checks if the list is non-empty, not if connections are alive.
-            - Thread-safe access protected by lock.
         """
-        with self._lock:
-            return len(self.clients) > 0
+        return len(self.clients) > 0
 
     async def broadcast(self, message: Dict[str, Any]):
         """
@@ -107,16 +78,9 @@ class WebSocketManager:
         Notes:
             - Removes clients that fail during transmission.
             - Exceptions are caught individually per client.
-            - Thread-safe: creates snapshot of client list before iteration.
         """
         to_remove = []
-        
-        # Create snapshot of clients while holding lock
-        with self._lock:
-            current_clients = list(self.clients)
-
-        # Send to all clients (outside lock to avoid blocking)
-        for ws in current_clients:
+        for ws in self.clients:
             try:
                 await ws.send_text(json.dumps(message))
             except Exception:
@@ -156,14 +120,12 @@ class WebSocketManager:
             interval: Time in seconds between keep-alive checks.
 
         Notes:
-            - Can be extended to send ping/pong frames or detect
-              broken connections earlier than default TCP timeout.
-            - Future improvement: send ws.ping() here to verify connection.
+            Can be extended to send ping/pong frames or detect
+            broken connections earlier than default TCP timeout.
         """
         try:
             while True:
                 await asyncio.sleep(interval)
-                # 🔹 Future improvement: send ws.ping() here
         except Exception:
             self.unregister(ws)
 
