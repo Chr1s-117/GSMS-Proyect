@@ -164,8 +164,9 @@ class Geofence(Base):
     # ============================================================
     # Flexible Metadata Storage
     # ============================================================
-    metadata = Column(
-        JSONB, 
+    extra_metadata = Column(
+        JSONB,  # ← SIN 'metadata' aquí
+        name='metadata',  # ← Usar name= en lugar de primer argumento
         nullable=True,
         doc=(
             "Flexible JSON metadata for storing additional geofence properties. "

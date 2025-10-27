@@ -172,6 +172,7 @@ class GeofenceBase(BaseModel):
         default=None,
         alias='metadata',
         serialization_alias='metadata',
+        validation_alias='extra_metadata',  # ← Para leer desde SQLAlchemy
         description="Custom JSON data for application-specific fields"
     )
 
@@ -269,7 +270,8 @@ class GeofenceUpdate(BaseModel):
     extra_metadata: Optional[Dict[str, Any]] = Field(
         default=None,
         alias='metadata',
-        serialization_alias='metadata'
+        serialization_alias='metadata',
+        validation_alias='extra_metadata'  # ← AGREGAR ESTA LÍNEA
     )
 
 
