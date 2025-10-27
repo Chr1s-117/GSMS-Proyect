@@ -28,10 +28,10 @@ geoalchemy2==0.15.2
 shapely==2.0.6
 
 # GeoPandas: GeoJSON file reading/writing for geofence import
-geopandas==0.14.4
+#geopandas==0.14.4
 
 # Fiona: GeoJSON/Shapefile I/O (dependency of GeoPandas)
-fiona==1.9.6
+#fiona==1.9.6
 
 # Pyproj: Coordinate system transformations (CRS reprojection)
 pyproj==3.6.1
