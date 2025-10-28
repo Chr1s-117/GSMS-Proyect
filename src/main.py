@@ -61,12 +61,12 @@ from src.DB.database import get_db
 # Used for reverse proxy scenarios (e.g., ALB path-based routing)
 # Examples: "", "/dev/chris", "/dev/laura", "/dev/jose"
 # ------------------------------------------------------------
-ROOT_PATH = os.getenv("ROOT_PATH", "").strip()
-if ROOT_PATH and not ROOT_PATH.startswith("/"):
-    ROOT_PATH = "/" + ROOT_PATH
-ROOT_PATH = ROOT_PATH.rstrip("/")  # Normalize: "/dev/chris/" -> "/dev/chris"
-
-print(f"[STARTUP] 🔧 ROOT_PATH configured as: '{ROOT_PATH or '(root)'}'")
+#ROOT_PATH = os.getenv("ROOT_PATH", "").strip()
+#if ROOT_PATH and not ROOT_PATH.startswith("/"):
+#    ROOT_PATH = "/" + ROOT_PATH
+#ROOT_PATH = ROOT_PATH.rstrip("/")  # Normalize: "/dev/chris/" -> "/dev/chris"
+#
+#print(f"[STARTUP] 🔧 ROOT_PATH configured as: '{ROOT_PATH or '(root)'}'")
 
 
 # ------------------------------------------------------------
