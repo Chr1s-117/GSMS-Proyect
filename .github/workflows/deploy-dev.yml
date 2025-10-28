@@ -2,12 +2,12 @@ name: Deploy Dev (per-developer)
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ "main" ]          # despliega al hacer push a main del repo dev
+  workflow_dispatch:               # también permite correrlo manualmente
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write                  # necesario para OIDC
 
 env:
   AWS_REGION: us-east-1
@@ -20,6 +20,7 @@ defaults:
 
 jobs:
   deploy:
+    # Solo corre si el repo tiene definida la variable DEV_NAME
     if: ${{ vars.DEV_NAME != '' }}
     runs-on: ubuntu-latest
     concurrency:
@@ -27,300 +28,103 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      # ============================================
-      # 1. Contexto y Checkout
-      # ============================================
-      - name: 📋 Contexto del Deploy
+      - name: Contexto
         run: |
-          echo "════════════════════════════════════════"
-          echo "🚀 GSMS Dev Deploy - ${{ vars.DEV_NAME }}"
-          echo "════════════════════════════════════════"
           echo "Repo   : $GITHUB_REPOSITORY"
           echo "Actor  : $GITHUB_ACTOR"
-          echo "Branch : $GITHUB_REF_NAME"
-          echo "Commit : $GITHUB_SHA"
-          echo "Dev    : ${{ vars.DEV_NAME }}"
-          echo "════════════════════════════════════════"
+          echo "DEV    : '${{ vars.DEV_NAME }}'"
 
-      - name: 📦 Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ============================================
-      # 2. Validación de Seguridad
-      # ============================================
-      - name: 🔒 Validar DEV_NAME vs Repo
+      # Defensa adicional: cruzamos DEV_NAME con el repo esperado
+      - name: Validar DEV_NAME vs repos permitidos
         run: |
           DEV="${{ vars.DEV_NAME }}"
           REPO="${GITHUB_REPOSITORY}"
-          
-          echo "Validando DEV_NAME='$DEV' para repo '$REPO'..."
-          
           case "$DEV" in
             chris)
-              if [ "$REPO" != "Chr1s-117/GSMS-Proyect-develop-chris" ]; then
-                echo "❌ ERROR: DEV_NAME=chris pero repo es $REPO"
-                exit 78
-              fi
+              test "$REPO" = "Chr1s-117/GSMS-Proyect-develop-chris" \
+                || { echo "DEV_NAME=chris pero repo es $REPO"; exit 78; }
               ;;
             laura)
-              if [ "$REPO" != "LMSC2112/GSMS-Proyect-develop-laura" ]; then
-                echo "❌ ERROR: DEV_NAME=laura pero repo es $REPO"
-                exit 78
-              fi
+              test "$REPO" = "LMSC2112/GSMS-Proyect-develop-laura" \
+                || { echo "DEV_NAME=laura pero repo es $REPO"; exit 78; }
               ;;
             jose)
-              if [ "$REPO" != "MendozaJose2001/GSMS-Proyect-develop-jose" ]; then
-                echo "❌ ERROR: DEV_NAME=jose pero repo es $REPO"
-                exit 78
-              fi
+              test "$REPO" = "MendozaJose2001/GSMS-Proyect-develop-jose" \
+                || { echo "DEV_NAME=jose pero repo es $REPO"; exit 78; }
               ;;
             *)
-              echo "❌ ERROR: DEV_NAME desconocido: $DEV"
-              exit 78
-              ;;
+              echo "DEV_NAME desconocido: $DEV"; exit 78;;
           esac
-          
-          echo "✅ Validación de seguridad OK"
 
-      # ============================================
-      # 3. Validación de Python Backend
-      # ============================================
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: 📚 Install Python Dependencies
-        run: |
-          echo "Instalando dependencias de Python..."
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          echo "✅ Dependencias instaladas"
-
-      - name: ✅ Validate Python Syntax
-        run: |
-          echo "Validando sintaxis de Python..."
-          python -m py_compile src/main.py
-          
-          for file in src/Core/*.py; do
-            [ -f "$file" ] && python -m py_compile "$file"
-          done
-          
-          for file in src/Services/*.py; do
-            [ -f "$file" ] && python -m py_compile "$file"
-          done
-          
-          for file in src/Models/*.py; do
-            [ -f "$file" ] && python -m py_compile "$file"
-          done
-          
-          echo "✅ Sintaxis de Python válida"
-
-      - name: 🗄️ Validate Alembic Migrations
-        run: |
-          echo "Validando migraciones de Alembic..."
-          export DATABASE_URL="sqlite:///./test.db"
-          
-          if alembic check 2>&1 | grep -q "No new upgrade operations detected"; then
-            echo "✅ Alembic migrations OK"
-          else
-            echo "⚠️ WARNING: Alembic check tiene advertencias (no crítico)"
-          fi
-
-      # ============================================
-      # 4. Frontend Check (PRECOMPILADO)
-      # ============================================
-      - name: 🔍 Check if Frontend Precompiled Exists
-        id: check_frontend
-        run: |
-          if [ -d "front_deploy/browser" ]; then
-            echo "frontend_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Precompiled frontend found at: front_deploy/browser/"
-            echo "📂 Contenido:"
-            ls -lh front_deploy/browser/ | head -10
-          else
-            echo "frontend_exists=false" >> $GITHUB_OUTPUT
-            echo "⚠️  WARNING: Precompiled frontend not found"
-            echo "    Expected: front_deploy/browser/"
-          fi
-
-      - name: ⚠️ Frontend Skip Notice
-        if: steps.check_frontend.outputs.frontend_exists == 'false'
-        run: |
-          echo ""
-          echo "════════════════════════════════════════"
-          echo "⚠️  FRONTEND UPLOAD SKIPPED"
-          echo "════════════════════════════════════════"
-          echo "Reason: Precompiled frontend not found"
-          echo "Expected location: front_deploy/browser/"
-          echo ""
-          echo "📝 This is normal if:"
-          echo "   • You haven't added the precompiled frontend yet"
-          echo "   • This is a backend-only repository"
-          echo ""
-          echo "✅ Backend-only deployment will proceed"
-          echo "════════════════════════════════════════"
-          echo ""
-
-      # ============================================
-      # 5. AWS Authentication
-      # ============================================
-      - name: 🔐 AWS Credentials (OIDC)
+      - name: Credenciales AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: 🔍 Verify AWS CLI
-        run: |
-          aws --version
-          aws sts get-caller-identity
+      - name: aws --version (debug)
+        run: aws --version
 
-      # ============================================
-      # 6. Calcular Paths de Release
-      # ============================================
-      - name: 📍 Calcular Rutas de Release
+      - name: Calcular rutas de release
         id: paths
         run: |
-          SHA="${GITHUB_SHA:0:7}"
-          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          RELEASE_ID="${TIMESTAMP}-${SHA}"
-          
-          PREFIX="s3://${{ env.S3_BUCKET }}/dev/${{ vars.DEV_NAME }}/releases/${RELEASE_ID}"
-          
+          SHA=$(git rev-parse HEAD)
           echo "sha=$SHA" >> $GITHUB_OUTPUT
-          echo "release_id=$RELEASE_ID" >> $GITHUB_OUTPUT
-          echo "prefix=$PREFIX" >> $GITHUB_OUTPUT
-          
-          echo "════════════════════════════════════════"
-          echo "📦 Release ID: $RELEASE_ID"
-          echo "📂 S3 Prefix: $PREFIX"
-          echo "════════════════════════════════════════"
+          echo "prefix=s3://${{ env.S3_BUCKET }}/dev/${{ vars.DEV_NAME }}/releases/${SHA}" >> $GITHUB_OUTPUT
+          echo "Publicando en: s3://${{ env.S3_BUCKET }}/dev/${{ vars.DEV_NAME }}/releases/${SHA}"
 
-      # ============================================
-      # 7. Upload Backend a S3
-      # ============================================
-      - name: ⬆️ Upload Backend (src/)
+      # === Empaquetado/Sync de artefactos ===
+      - name: Subir src/
         run: |
-          echo "Subiendo código backend..."
-          aws s3 sync src "${{ steps.paths.outputs.prefix }}/src" \
-            --delete \
-            --exclude "*.pyc" \
-            --exclude "__pycache__/*" \
-            --exclude "*.pyo"
-          echo "✅ Backend subido"
+          if [ -d src ]; then
+            aws s3 sync src "${{ steps.paths.outputs.prefix }}/src" --delete
+          fi
 
-      - name: ⬆️ Upload Alembic Migrations
+      - name: Subir front/
         run: |
+          if [ -d front ]; then
+            aws s3 sync front "${{ steps.paths.outputs.prefix }}/front" --delete
+          fi
+
+      - name: Subir deploy/ (opcional)
+        run: |
+          if [ -d deploy ]; then
+            aws s3 sync deploy "${{ steps.paths.outputs.prefix }}/deploy" --delete
+          fi
+
+      - name: Subir extras (alembic, alembic.ini, requirements.txt)
+        run: |
+          # Carpeta alembic
           if [ -d alembic ]; then
-            echo "Subiendo migraciones Alembic..."
             aws s3 sync alembic "${{ steps.paths.outputs.prefix }}/alembic" --delete
-            echo "✅ Alembic subido"
           fi
-
-      - name: ⬆️ Upload Configuration Files
-        run: |
-          echo "Subiendo archivos de configuración..."
-          
-          [ -f alembic.ini ] && \
+          # Archivos sueltos
+          if [ -f alembic.ini ]; then
             aws s3 cp alembic.ini "${{ steps.paths.outputs.prefix }}/alembic.ini"
-          
-          [ -f requirements.txt ] && \
+          fi
+          if [ -f requirements.txt ]; then
             aws s3 cp requirements.txt "${{ steps.paths.outputs.prefix }}/requirements.txt"
-          
-          echo "✅ Archivos de configuración subidos"
-
-      # ============================================
-      # 8. Upload Frontend Precompilado (CONDICIONAL)
-      # ============================================
-      - name: ⬆️ Upload Frontend (Precompilado)
-        if: steps.check_frontend.outputs.frontend_exists == 'true'
-        run: |
-          echo "Subiendo frontend precompilado..."
-          aws s3 sync front_deploy/browser "${{ steps.paths.outputs.prefix }}/front_deploy/browser" \
-            --delete \
-            --cache-control "public, max-age=31536000, immutable" \
-            --exclude "index.html"
-          
-          # index.html sin cache (para actualizaciones inmediatas)
-          aws s3 cp front_deploy/browser/index.html "${{ steps.paths.outputs.prefix }}/front_deploy/browser/index.html" \
-            --cache-control "no-cache, no-store, must-revalidate"
-          
-          echo "✅ Frontend precompilado subido"
-
-      - name: ℹ️ Frontend Upload Skipped
-        if: steps.check_frontend.outputs.frontend_exists == 'false'
-        run: |
-          echo "⏭️  Skipping frontend upload (no precompiled frontend found)"
-
-      # ============================================
-      # 9. Upload Data (Geofences)
-      # ============================================
-      - name: ⬆️ Upload Data Files (Geofences)
-        run: |
-          if [ -d data ]; then
-            echo "Subiendo archivos de datos (geofences)..."
-            aws s3 sync data "${{ steps.paths.outputs.prefix }}/data" --delete
-            echo "✅ Data subida"
-          else
-            echo "ℹ️  No hay carpeta data/ para subir"
           fi
 
-      # ============================================
-      # 10. Actualizar SSM Parameter (Trigger Deploy)
-      # ============================================
-      - name: 🔄 Update SSM Parameter
+      - name: Actualizar SSM package_url del dev
         run: |
-          echo "Actualizando SSM parameter para trigger deploy..."
-          
           aws ssm put-parameter \
             --name "/gsms/dev/${{ vars.DEV_NAME }}/app/package_url" \
             --value "${{ steps.paths.outputs.prefix }}" \
             --type String \
             --overwrite
-          
-          echo "✅ SSM actualizado: /gsms/dev/${{ vars.DEV_NAME }}/app/package_url"
-          echo "   → ${{ steps.paths.outputs.prefix }}"
+          echo "SSM OK: /gsms/dev/${{ vars.DEV_NAME }}/app/package_url -> ${{ steps.paths.outputs.prefix }}"
 
-      # ============================================
-      # 11. Resumen Final
-      # ============================================
-      - name: 📊 Deploy Summary
+      - name: Salida final
         run: |
-          echo ""
-          echo "════════════════════════════════════════"
-          echo "✅ DEPLOY COMPLETADO"
-          echo "════════════════════════════════════════"
-          echo "🎯 Dev Environment: ${{ vars.DEV_NAME }}"
-          echo "📦 Release ID: ${{ steps.paths.outputs.release_id }}"
-          echo "📂 S3 Prefix: ${{ steps.paths.outputs.prefix }}"
-          echo ""
-          echo "📦 Componentes Deployados:"
-          if [ "${{ steps.check_frontend.outputs.frontend_exists }}" == "true" ]; then
-            echo "   ✅ Backend (Python/FastAPI)"
-            echo "   ✅ Frontend (Angular Precompilado)"
-            echo "   ✅ Geofences (data/)"
-          else
-            echo "   ✅ Backend (Python/FastAPI)"
-            echo "   ⏭️  Frontend (no disponible)"
-            echo "   ✅ Geofences (data/)"
-          fi
-          echo ""
-          echo "🔗 URLs de Acceso:"
-          echo "   Backend Health: https://dassify.tech/dev/${{ vars.DEV_NAME }}/health"
-          echo "   Frontend:       https://dassify.tech/dev/${{ vars.DEV_NAME }}/"
-          echo ""
-          echo "📝 Siguiente paso:"
-          echo "   SSH a EC2 y ejecutar:"
-          echo "   sudo systemctl restart gsms-backend-dev@${{ vars.DEV_NAME }}.service"
-          echo "════════════════════════════════════════"
+          echo "Release prefix: ${{ steps.paths.outputs.prefix }}"
 
-  # ============================================
-  # Job de Production (Deshabilitado en Dev Repos)
-  # ============================================
+  # Job de prod explícitamente deshabilitado para repos DEV
   ec2_deploy_prod:
     if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "🚫 Deshabilitado en repos DEV"
+      - run: echo "Deshabilitado en repos DEV"

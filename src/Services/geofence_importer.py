@@ -1,287 +1,190 @@
 # src/Services/geofence_importer.py
-"""
-Geofence Importer Service
-Imports geofences from GeoJSON files into PostgreSQL/PostGIS
 
-Version: 2025-10-27
-Author: Chr1s-117
-Changes: Removed GeoPandas dependency, uses pure Shapely + JSON
+"""
+Servicio de importación de geocercas desde archivos GeoJSON normalizados.
+
+IMPORTANTE: Los archivos GeoJSON deben estar previamente en EPSG:4326.
+Para archivos en otros CRS, normalízalos primero con el script de preparación.
+
+Funcionalidad:
+- Lee archivos GeoJSON (sin geopandas)
+- Convierte geometrías a formato PostGIS WKT usando Shapely
+- Importa a PostgreSQL con manejo de duplicados
 """
 
-import json
-import logging
-import uuid  # ✅ AGREGADO
-from pathlib import Path
-from typing import Tuple, Optional
-from shapely.geometry import shape, mapping
-from shapely import wkt as shapely_wkt
+from typing import Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
-
-from src.Models.geofence import Geofence
-
-# ============================================
-# Module-level logging
-# ============================================
-logger = logging.getLogger(__name__)
+from sqlalchemy.exc import IntegrityError
+import json
+from shapely.geometry import shape
+from src.Repositories.geofence import get_geofence_by_id, create_geofence, update_geofence
 
 
 class GeofenceImporter:
     """
-    Imports geofence data from GeoJSON files into PostgreSQL/PostGIS.
-    
-    Uses Shapely for geometry handling instead of GeoPandas to avoid GDAL dependency.
+    Importador de geocercas desde GeoJSON.
     """
 
-    def __init__(self, db: Session):
-        """
-        Initialize the geofence importer.
-        
-        Args:
-            db: SQLAlchemy database session
-        """
-        self.db = db
-
     def import_from_file(
-        self, 
-        file_path: str,
-        default_type: str = "polygon"
+        self,
+        db: Session,
+        filepath: str,
+        mode: str = 'skip'
     ) -> Tuple[int, int, int, int]:
         """
-        Import geofences from a GeoJSON file.
+        Importa geocercas desde archivo GeoJSON local.
         
         Args:
-            file_path: Path to the GeoJSON file
-            default_type: Default geofence type if not specified in properties
+            db: Session SQLAlchemy
+            filepath: Ruta al archivo GeoJSON (DEBE estar en EPSG:4326)
+            mode: Modo de importación
+                - 'skip': Salta duplicados (default)
+                - 'update': Actualiza duplicados
+                - 'replace': Reemplaza todos
         
         Returns:
-            Tuple of (created, updated, skipped, failed) counts
+            Tupla (created, updated, skipped, failed)
+        
+        Note:
+            Este método asume que el GeoJSON está normalizado a EPSG:4326.
+            Features sin 'id' o sin geometría serán contados como 'skipped'.
+            Geometrías inválidas se intentan reparar con buffer(0).
+        """
+        print(f"[IMPORT] Loading geofences from: {filepath}")
+
+        # Leer archivo GeoJSON
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                geojson_data = json.load(f)
+        except FileNotFoundError:
+            print(f"[IMPORT] File not found: {filepath}")
+            return (0, 0, 0, 0)
+        except json.JSONDecodeError as e:
+            print(f"[IMPORT] Invalid JSON format: {e}")
+            return (0, 0, 0, 0)
+
+        # Validar estructura básica
+        if geojson_data.get('type') != 'FeatureCollection':
+            print("[IMPORT] Invalid GeoJSON: expected 'FeatureCollection'")
+            return (0, 0, 0, 0)
+
+        # ✅ Validación adicional de CRS
+        crs = geojson_data.get('crs', {}).get('properties', {}).get('name', '')
+        if crs and 'EPSG:4326' not in crs and 'WGS84' not in crs:
+            print(f"[IMPORT] Warning: CRS is {crs}, expected EPSG:4326")
+
+        features = geojson_data.get('features', [])
+        print(f"[IMPORT] Loaded {len(features)} geofences from file")
+        print("[IMPORT] Assuming GeoJSON is in EPSG:4326")
+
+        return self.import_from_geojson_dict(db, geojson_data, mode=mode)
+
+    def import_from_geojson_dict(
+        self,
+        db: Session,
+        geojson_dict: dict,
+        mode: str = 'skip'
+    ) -> Tuple[int, int, int, int]:
+        """
+        Importa geocercas desde un diccionario GeoJSON.
+
+        Args:
+            db: Session SQLAlchemy
+            geojson_dict: Diccionario con formato GeoJSON
+            mode: 'skip' | 'update' | 'replace'
+
+        Returns:
+            (created, updated, skipped, failed)
         """
         created = 0
         updated = 0
         skipped = 0
         failed = 0
 
-        try:
-            # Read GeoJSON file
-            file_path_obj = Path(file_path)
-            
-            if not file_path_obj.exists():
-                print(f"[GEOFENCE-IMPORTER] ❌ File not found: {file_path}")
-                return (0, 0, 0, 1)
+        features = geojson_dict.get('features', [])
 
-            print(f"[GEOFENCE-IMPORTER] 📂 Reading file: {file_path}")
-            
-            with open(file_path_obj, 'r', encoding='utf-8') as f:
-                geojson_data = json.load(f)
+        for feature in features:
+            properties = {}  # inicialización temprana
+            try:
+                properties = feature.get('properties', {})
+                geometry_dict = feature.get('geometry')
 
-            # Extract features
-            features = geojson_data.get('features', [])
-            
-            if not features:
-                print("[GEOFENCE-IMPORTER] ⚠️  No features found in GeoJSON")
-                return (0, 0, 0, 0)
+                if not geometry_dict:
+                    print("[IMPORT] Skipping feature without geometry")
+                    skipped += 1
+                    continue
 
-            print(f"[GEOFENCE-IMPORTER] 📊 Processing {len(features)} features...")
+                geofence_id = str(properties.get('id') or feature.get('id') or '').strip()
+                if not geofence_id:
+                    print("[IMPORT] Warning: Feature without ID, skipping")
+                    skipped += 1
+                    continue
 
-            # Process each feature
-            for idx, feature in enumerate(features):
+                # Convertir geometría a WKT
                 try:
-                    # Extract properties and geometry
-                    properties = feature.get('properties', {})
-                    geometry = feature.get('geometry')
-
-                    if not geometry:
-                        print(f"[GEOFENCE-IMPORTER] ⚠️  Feature {idx} has no geometry, skipping")
-                        skipped += 1
-                        continue
-
-                    # Convert GeoJSON geometry to Shapely object
-                    try:
-                        geom = shape(geometry)
-                    except Exception as e:
-                        print(f"[GEOFENCE-IMPORTER] ❌ Invalid geometry in feature {idx}: {e}")
-                        failed += 1
-                        continue
-
-                    # Validate geometry
+                    geom = shape(geometry_dict)
+                    geom_type = geom.geom_type  # ✅ Tipo de geometría en el log
                     if not geom.is_valid:
-                        print(f"[GEOFENCE-IMPORTER] ⚠️  Invalid geometry in feature {idx}, attempting to fix...")
-                        geom = geom.buffer(0)  # Attempt to fix invalid geometry
-                        
-                        if not geom.is_valid:
-                            print(f"[GEOFENCE-IMPORTER] ❌ Could not fix geometry in feature {idx}")
-                            failed += 1
-                            continue
-
-                    # Convert to WKT for PostGIS
-                    wkt = geom.wkt
-
-                    # Extract properties
-                    name = properties.get('name') or properties.get('NAME') or f"Geofence_{idx}"
-                    geofence_type = properties.get('type') or properties.get('TYPE') or default_type
-                    description = properties.get('description') or properties.get('DESCRIPTION')
-                    
-                    # ✅ GENERATE UNIQUE ID
-                    geofence_id = properties.get('id') or f"geofence_{uuid.uuid4().hex[:12]}"
-                    
-                    # Check if geofence already exists
-                    existing = self.db.query(Geofence).filter_by(name=name).first()
-
-                    if existing:
-                        # Update existing geofence
-                        existing.geometry = f"SRID=4326;{wkt}"
-                        existing.type = geofence_type
-                        
-                        if description:
-                            existing.description = description
-                        
-                        updated += 1
-                        print(f"[GEOFENCE-IMPORTER] ♻️  Updated: {name}")
-                    else:
-                        # Create new geofence
-                        new_geofence = Geofence(
-                            id=geofence_id,  # ✅ EXPLICIT ID
-                            name=name,
-                            geometry=f"SRID=4326;{wkt}",
-                            type=geofence_type,
-                            description=description
-                        )
-                        self.db.add(new_geofence)
-                        created += 1
-                        print(f"[GEOFENCE-IMPORTER] ✅ Created: {name} (ID: {geofence_id})")
-
+                        geom = geom.buffer(0)
+                    geometry_wkt = geom.wkt
                 except Exception as e:
-                    print(f"[GEOFENCE-IMPORTER] ❌ Error processing feature {idx}: {e}")
+                    print(f"[IMPORT] Invalid geometry for {geofence_id}: {e}")
                     failed += 1
                     continue
 
-            # Commit all changes
-            try:
-                self.db.commit()
-                print(f"[GEOFENCE-IMPORTER] 💾 Database commit successful")
-            except SQLAlchemyError as e:
-                print(f"[GEOFENCE-IMPORTER] ❌ Database commit failed: {e}")
-                self.db.rollback()
-                # If commit fails, all are considered failed
-                return (0, 0, 0, created + updated)
+                # Preparar datos para insert/update
+                geofence_data = {
+                    'id': geofence_id,
+                    'name': properties.get('name') or f'Geofence {geofence_id}',
+                    'description': properties.get('description'),
+                    'type': properties.get('type', 'custom'),
+                    'is_active': properties.get('is_active', True),
+                    'color': properties.get('color', '#3388ff'),
+                    'geometry': geometry_wkt,
+                    'extra_metadata': properties.get('metadata')
+                }
 
-            # Print summary
-            print(f"[GEOFENCE-IMPORTER] 📊 Import Summary:")
-            print(f"  ✅ Created: {created}")
-            print(f"  ♻️  Updated: {updated}")
-            print(f"  ⏭️  Skipped: {skipped}")
-            print(f"  ❌ Failed:  {failed}")
+                # Verificar si ya existe
+                existing = get_geofence_by_id(db, geofence_id)
 
-        except Exception as e:
-            print(f"[GEOFENCE-IMPORTER] ❌ Fatal error: {e}")
-            self.db.rollback()
-            return (0, 0, 0, len(features) if 'features' in locals() else 1)
+                if existing:
+                    if mode == 'skip':
+                        skipped += 1
+                        print(f"[IMPORT] Skipped (exists): {geofence_id}")
+                        continue
+
+                    elif mode == 'update':
+                        update_geofence(db, geofence_id, geofence_data)
+                        updated += 1
+                        print(f"[IMPORT] Updated: {geofence_id}")
+
+                    elif mode == 'replace':
+                        db.delete(existing)
+                        db.commit()
+                        create_geofence(db, geofence_data)
+                        created += 1
+                        print(f"[IMPORT] Replaced: {geofence_id} ({geom_type})")
+
+                else:
+                    create_geofence(db, geofence_data)
+                    created += 1
+                    print(f"[IMPORT] Created {geom_type}: {geofence_id}")
+
+            except IntegrityError as ie:
+                db.rollback()
+                failed += 1
+                print(f"[IMPORT] IntegrityError for {properties.get('id', 'unknown')}: {ie}")
+
+            except Exception as e:
+                db.rollback()
+                failed += 1
+                print(f"[IMPORT] Error importing {properties.get('id', 'unknown')}: {e}")
+
+        print(f"[IMPORT] Processed: {created} created, {updated} updated, "
+              f"{skipped} skipped, {failed} failed")
 
         return (created, updated, skipped, failed)
 
-    def export_to_geojson(
-        self, 
-        output_path: str,
-        geofence_type: Optional[str] = None
-    ) -> bool:
-        """
-        Export geofences from database to GeoJSON file.
-        
-        Args:
-            output_path: Path where to save the GeoJSON file
-            geofence_type: Optional filter by geofence type
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Query geofences
-            query = self.db.query(Geofence)
-            
-            if geofence_type:
-                query = query.filter_by(type=geofence_type)
-            
-            geofences = query.all()
 
-            if not geofences:
-                print("[GEOFENCE-IMPORTER] ⚠️  No geofences found to export")
-                return False
-
-            # Build GeoJSON structure
-            features = []
-            
-            for geofence in geofences:
-                try:
-                    # Extract WKT and remove SRID prefix
-                    wkt_str = str(geofence.geometry)
-                    if wkt_str.startswith('SRID='):
-                        wkt_str = wkt_str.split(';', 1)[1]
-                    
-                    # Convert WKT to Shapely geometry
-                    geom = shapely_wkt.loads(wkt_str)
-                    
-                    # Convert to GeoJSON geometry
-                    geom_json = mapping(geom)
-                    
-                    # Build feature
-                    feature = {
-                        "type": "Feature",
-                        "properties": {
-                            "id": geofence.id,
-                            "name": geofence.name,
-                            "type": geofence.type,
-                            "description": geofence.description,
-                            "created_at": geofence.created_at.isoformat() if geofence.created_at else None,
-                            "updated_at": geofence.updated_at.isoformat() if geofence.updated_at else None
-                        },
-                        "geometry": geom_json
-                    }
-                    
-                    features.append(feature)
-                    
-                except Exception as e:
-                    print(f"[GEOFENCE-IMPORTER] ⚠️  Error exporting geofence {geofence.name}: {e}")
-                    continue
-
-            # Build complete GeoJSON
-            geojson = {
-                "type": "FeatureCollection",
-                "features": features
-            }
-
-            # Write to file
-            output_path_obj = Path(output_path)
-            output_path_obj.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(output_path_obj, 'w', encoding='utf-8') as f:
-                json.dump(geojson, f, indent=2, ensure_ascii=False)
-
-            print(f"[GEOFENCE-IMPORTER] ✅ Exported {len(features)} geofences to {output_path}")
-            return True
-
-        except Exception as e:
-            print(f"[GEOFENCE-IMPORTER] ❌ Export failed: {e}")
-            return False
-
-
-# ============================================
-# Global instance for backward compatibility
-# ============================================
-geofence_importer = None
-
-
-def init_geofence_importer(db: Session):
-    """
-    Initialize the global geofence_importer instance.
-    
-    Args:
-        db: SQLAlchemy database session
-    
-    Returns:
-        GeofenceImporter instance
-    """
-    global geofence_importer
-    geofence_importer = GeofenceImporter(db)
-    logger.info("[GEOFENCE-IMPORTER] ✅ Global instance initialized")
-    return geofence_importer
+# Singleton
+geofence_importer = GeofenceImporter()

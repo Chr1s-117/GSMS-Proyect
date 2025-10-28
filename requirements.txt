@@ -1,52 +1,27 @@
 # ============================================
-# GSMS Backend - Python Dependencies
-# ============================================
-# Version: 2025-10-27
-# Python: 3.11+
+# GSMS Backend - Python 3.12.7
+# Geolocation Service with Geofences
 # ============================================
 
-# ============================================
 # Core Framework
-# ============================================
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-
-# ============================================
-# Database & ORM
-# ============================================
-SQLAlchemy==2.0.43
-alembic==1.16.5
-psycopg2-binary==2.9.10
-
-# ============================================
-# Data Validation & Settings
-# ============================================
-pydantic==2.11.7
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
 pydantic-settings==2.5.2
 
-# ============================================
-# Geospatial Support (PostGIS)
-# ============================================
-# GeoAlchemy2: SQLAlchemy extension for PostGIS
+# Database & ORM
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+alembic==1.13.3
+
+# Geospatial (PostGIS + Geofences)
 geoalchemy2==0.15.2
+shapely>=2.0.0
 
-# Shapely: Geometric operations (NO GDAL dependency)
-shapely==2.0.6
-
-# PyProj: Coordinate transformations
-pyproj==3.6.1
-
-# ❌ REMOVED: geopandas==0.14.4 (requires GDAL)
-# ❌ REMOVED: fiona==1.9.6 (requires GDAL)
-
-# ============================================
 # Utilities
-# ============================================
-# Environment variables
 python-dotenv==1.0.1
-
-# File uploads
 python-multipart==0.0.12
 
-# HTTP requests
-requests==2.31.0
+# Para instalar dependencias
+# pip install -r requirements.txt
+# Si hay problemas para usar comandos y dependencias, considere usar el comando Python -m <COMANDO>

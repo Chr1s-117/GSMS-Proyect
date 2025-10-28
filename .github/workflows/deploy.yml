@@ -1,0 +1,550 @@
+name: Deploy GSMS to EC2 via SSM
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write     # OIDC para asumir el rol de AWS
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  # Ajusta estos valores a los de tu cuenta/bucket/prefix
+  S3_BUCKET: gsms-artifacts-727529936291-use1
+  S3_PREFIX: WebServer_GSMS_S3_GitHub
+  RELEASES_PREFIX: releases
+  SSM_PACKAGE_PARAM: /gsms/prod/app/package_url
+
+  # Target principal por TAG (recomendado). Si no lo usas, deja vacío y define ASG_NAME.
+  EC2_TARGET_TAG_KEY: App
+  EC2_TARGET_TAG_VALUE: gsms-web
+
+  # Alternativa de destino por ASG (fallback si no usas TAGS):
+  ASG_NAME: asg-gsms-web
+
+  # ARN del rol que asume GitHub (defínelo como Repo Variable o Secret)
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+
+  # <<< NUEVO >>> Controla si se reinician las instancias al final
+  REBOOT_AFTER_DEPLOY: "true"
+
+jobs:
+  deploy:
+    if: ${{ github.repository == 'Chr1s-117/GSMS-Proyect' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare local deploy_from_s3.sh
+        shell: bash
+        run: |
+          cat > deploy_from_s3.sh <<'EOF_SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+          APP_ROOT="/opt/gsms"
+          APP_DIR="${APP_ROOT}/app"
+          VENV_DIR="${APP_ROOT}/venv"
+          SERVICE_WEB="gsms-web.service"
+          SERVICE_UDP="gsms-udp.service"
+          USER_SVC="gsms"
+
+          S3_PATH="${1:?Uso: deploy_from_s3.sh s3://bucket/prefix/release_id}"
+
+          # Asegurar usuario/grupo o hacer fallback a root
+          if ! id -u "${USER_SVC}" >/dev/null 2>&1; then
+            echo "[WARN] Usuario ${USER_SVC} no existe; usando root para propietarios."
+            USER_SVC="root"
+          fi
+
+          # Asegurar estructura y venv
+          install -d -m 0755 "${APP_DIR}/src"
+          chown -R ${USER_SVC}:${USER_SVC} "${APP_ROOT}" || true
+
+          if [ ! -x "${VENV_DIR}/bin/python" ]; then
+            echo "[Venv] Creando venv en ${VENV_DIR} ..."
+            python3 -m venv "${VENV_DIR}"
+          fi
+          PY="${VENV_DIR}/bin/python"
+          PIP="${VENV_DIR}/bin/pip"
+
+          # ---- Chequeo fino de S3 (distingue sin-permisos vs. vacío) ----
+          if ! aws s3 ls "${S3_PATH%/}/" --recursive >/tmp/gsms_ls.out 2>/tmp/gsms_ls.err ; then
+            echo "[ERROR] Falló 'aws s3 ls' (posible permisos/red). Stderr:"
+            sed -n '1,50p' /tmp/gsms_ls.err || true
+            exit 22
+          fi
+          if ! grep -q . /tmp/gsms_ls.out ; then
+            echo "[ERROR] Ruta S3 sin objetos: ${S3_PATH}"
+            exit 21
+          fi
+
+          command -v aws >/dev/null || { echo "Falta AWS CLI"; exit 20; }
+
+          # Menos ruido para no romper el pipe de SSM
+          LOG_DIR="/var/log/gsms-deploy"
+          install -d -m 0755 "${LOG_DIR}" || true
+
+          echo "[Deploy] Sincronizando código desde ${S3_PATH}"
+          aws s3 sync "${S3_PATH%/}/src/" "${APP_DIR}/src/" \
+            --delete --exclude ".git/*" --no-progress --only-show-errors \
+            > "${LOG_DIR}/s3_sync_src.log" 2>&1 || true
+          echo "[s3] src sync (primeras 50 líneas)"; sed -n '1,50p' "${LOG_DIR}/s3_sync_src.log" || true
+
+          aws s3 sync "${S3_PATH%/}/" "${APP_DIR}/" \
+            --delete --exclude "src/" --exclude "releases/" --exclude ".git/*" \
+            --no-progress --only-show-errors \
+            > "${LOG_DIR}/s3_sync_root.log" 2>&1 || true
+          echo "[s3] root sync (primeras 50 líneas)"; sed -n '1,50p' "${LOG_DIR}/s3_sync_root.log" || true
+
+          chown -R ${USER_SVC}:${USER_SVC} "${APP_DIR}"
+          find "${APP_DIR}" -type d -name "_pycache_" -exec rm -rf {} + || true
+
+          REQ_FILE=""
+          [ -f "${APP_DIR}/requirements.txt" ] && REQ_FILE="${APP_DIR}/requirements.txt"
+          [ -z "$REQ_FILE" ] && [ -f "${APP_DIR}/src/requirements.txt" ] && REQ_FILE="${APP_DIR}/src/requirements.txt"
+
+          # Siempre actualizar pip/wheel en silencio
+          ${PY} -m pip install --upgrade --disable-pip-version-check -q pip wheel >> "${LOG_DIR}/pip_bootstrap.log" 2>&1 || true
+
+          if [ -n "$REQ_FILE" ]; then
+            CURR_SHA="$(sha256sum "$REQ_FILE" | awk '{print $1}')"
+            PREV_SHA_FILE="${APP_ROOT}/.requirements.sha256"
+            PREV_SHA="$(cat "$PREV_SHA_FILE" 2>/dev/null || echo "")"
+
+            if [ "$CURR_SHA" != "$PREV_SHA" ]; then
+              echo "[Deps] Cambios en requirements -> instalando..."
+              ${PIP} install --no-input --disable-pip-version-check -r "$REQ_FILE" \
+                >> "${LOG_DIR}/pip_install.log" 2>&1
+              echo "$CURR_SHA" > "$PREV_SHA_FILE"
+            else
+              echo "[Deps] Requirements sin cambios."
+            fi
+          else
+            echo "[Deps] No se encontró requirements.txt. Instalando base..."
+            ${PIP} install --no-input --disable-pip-version-check \
+              fastapi==0.116.1 "uvicorn[standard]"==0.35.0 SQLAlchemy==2.0.43 alembic==1.16.5 \
+              psycopg2-binary==2.9.10 aiosqlite==0.20.0 pydantic==2.11.7 pydantic-settings==2.1.0 \
+              requests==2.31.0 Jinja2==3.1.3 >> "${LOG_DIR}/pip_install.log" 2>&1
+          fi
+
+          # Mostrar solo resumen de pip
+          echo "[pip] bootstrap (últimas 40 líneas)"; tail -n 40 "${LOG_DIR}/pip_bootstrap.log" 2>/dev/null || true
+          echo "[pip] install   (últimas 80 líneas)"; tail -n 80 "${LOG_DIR}/pip_install.log" 2>/dev/null || true
+
+          # Verificación clara de dependencias
+          if [ ! -x "${VENV_DIR}/bin/uvicorn" ]; then
+            echo "[ERROR] uvicorn no se instaló en ${VENV_DIR}/bin"; exit 1
+          fi
+          if ! ${PIP} show pydantic-settings >/dev/null 2>&1; then
+            echo "[ERROR] pydantic-settings no está instalado"; exit 1
+          fi
+
+          echo "[Deploy] Reiniciando servicios..."
+          systemctl daemon-reload
+          if systemctl list-unit-files | grep -q "^${SERVICE_WEB}"; then
+            systemctl restart "${SERVICE_WEB}"
+            sleep 2
+            systemctl --no-pager --full status "${SERVICE_WEB}" | tail -n 50 || true
+          fi
+          if systemctl list-unit-files | grep -q "^${SERVICE_UDP}"; then
+            systemctl restart "${SERVICE_UDP}" || true
+            systemctl --no-pager --full status "${SERVICE_UDP}" | tail -n 30 || true
+          fi
+
+          echo "release=$(basename "${S3_PATH}")" > ${APP_ROOT}/build.txt
+          curl -sS --max-time 3 http://127.0.0.1:8000/health >/dev/null || echo "[WARN] /health no respondió."
+          echo "[Deploy] OK"
+          EOF_SCRIPT
+
+      - name: Configurar credenciales de AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Calcular SHA y RELEASE_URI
+        id: meta
+        shell: bash
+        run: |
+          SHA="${GITHUB_SHA}"
+          RELEASE_URI="s3://${S3_BUCKET}/${S3_PREFIX}/${RELEASES_PREFIX}/${SHA}"
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "release_uri=${RELEASE_URI}" >> $GITHUB_OUTPUT
+          echo "Publicaremos en: ${RELEASE_URI}"
+
+      - name: Publicar release en S3 (código del repo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 sync . "${{ steps.meta.outputs.release_uri }}" \
+            --delete \
+            --no-progress \
+            --exclude ".git/*" \
+            --exclude ".github/*"
+        
+      - name: Verificar que la release tenga contenido
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_URI="${{ steps.meta.outputs.release_uri }}"
+          echo "Listando contenido de ${RELEASE_URI}/ ..."
+          aws s3 ls "${RELEASE_URI}/" --recursive --human-readable --summarize || true
+
+          COUNT=$(aws s3 ls "${RELEASE_URI}/" --recursive | wc -l || echo 0)
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "::error::La release en S3 está vacía: ${RELEASE_URI}/"
+            echo "Diagnóstico local:"
+            echo "== ls -la =="
+            ls -la
+            echo "== git ls-files (máx 200) =="
+            git ls-files | head -n 200
+            exit 66
+          fi
+
+      - name: Actualizar parámetro SSM con la release publicada
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ssm put-parameter \
+            --name "${SSM_PACKAGE_PARAM}" \
+            --type String \
+            --overwrite \
+            --value "${{ steps.meta.outputs.release_uri }}"
+          echo "SSM ${SSM_PACKAGE_PARAM} -> ${{ steps.meta.outputs.release_uri }}"
+
+      - name: Resolver INSTANCE_IDS del destino (por TAG o por ASG)
+        id: targets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INSTANCE_IDS=""
+          if [[ -n "${EC2_TARGET_TAG_KEY}" && -n "${EC2_TARGET_TAG_VALUE}" ]]; then
+            echo "Descubriendo instancias por Tag: ${EC2_TARGET_TAG_KEY}=${EC2_TARGET_TAG_VALUE}"
+            INSTANCE_IDS="$(aws ec2 describe-instances \
+              --filters "Name=instance-state-name,Values=running" "Name=tag:${EC2_TARGET_TAG_KEY},Values=${EC2_TARGET_TAG_VALUE}" \
+              --query "Reservations[].Instances[].InstanceId" --output text | tr '\t' ',' | sed 's/,$//')"
+          fi
+
+          if [[ -z "${INSTANCE_IDS}" && -n "${ASG_NAME}" ]]; then
+            echo "Descubriendo instancias por ASG: ${ASG_NAME}"
+            INSTANCE_IDS="$(aws autoscaling describe-auto-scaling-groups \
+              --auto-scaling-group-names "${ASG_NAME}" \
+              --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId" \
+              --output text | tr '\t' ',' | sed 's/,$//')"
+          fi
+
+          if [[ -z "${INSTANCE_IDS}" ]]; then
+            echo "Error: No se encontraron instancias destino." >&2
+            exit 1
+          fi
+
+          echo "instance_ids=${INSTANCE_IDS}" >> $GITHUB_OUTPUT
+          echo "Instancias: ${INSTANCE_IDS}"
+
+      - name: Pre-chequeo del deploy script (existencia y hash)
+        id: precheck
+        shell: bash
+        run: |
+          set -eo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+
+          EXPECTED_SHA="$(sha256sum deploy_from_s3.sh | cut -d' ' -f1)"
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"if [ -x /usr/local/bin/deploy_from_s3.sh ]; then sha256sum /usr/local/bin/deploy_from_s3.sh | cut -d' ' -f1; else echo MISSING; exit 42; fi\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          MISMATCH=0
+          for id in "${IDS[@]}"; do
+            for i in {1..10}; do
+              STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo Unknown)
+              [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "TimedOut" || "$STATUS" == "Cancelled" ]] && break
+              sleep 2
+            done
+            OUT=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "StandardOutputContent" --output text || echo "")
+            if [[ "$OUT" != "$EXPECTED_SHA" ]]; then
+              echo "Mismatch/MISSING en $id ($OUT != $EXPECTED_SHA)"
+              MISMATCH=1
+            fi
+          done
+
+          if [[ $MISMATCH -ne 0 ]]; then
+            echo "precheck_result=missing" >> $GITHUB_OUTPUT
+          else
+            echo "precheck_result=ok" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sincronizar/instalar deploy_from_s3.sh (idempotente)
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          B64="$(base64 -w0 deploy_from_s3.sh)"   # macOS: base64 -b 0
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Sync deploy_from_s3.sh (base64)" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"echo '${B64}' | base64 -d > /usr/local/bin/deploy_from_s3.sh\",
+              \"chmod +x /usr/local/bin/deploy_from_s3.sh\",
+              \"sed -i 's/\\r$//' /usr/local/bin/deploy_from_s3.sh\",
+              \"head -n 3 /usr/local/bin/deploy_from_s3.sh\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          for id in "${IDS[@]}"; do
+            for i in {1..20}; do
+              STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo unknown)
+              [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]] && break
+              sleep 2
+            done
+            echo "--- Resultado sync en $id ---"
+            aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" \
+              --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
+          done
+
+      - name: Instalar unit systemd gsms-release-sync.service
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+
+          # Construimos el unit y lo convertimos a una sola línea base64
+          B64_UNIT=$(base64 -w0 <<'EOF_UNIT'
+          [Unit]
+          Description=GSMS Release Sync (pull latest from S3 using SSM param)
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          Environment="AWS_DEFAULT_REGION=us-east-1"
+          ExecStart=/bin/bash -lc '\
+            set -euo pipefail; \
+            URI=$(aws ssm get-parameter --name /gsms/prod/app/package_url --query "Parameter.Value" --output text); \
+            echo "[gsms-release-sync] Deploying $URI"; \
+            /usr/local/bin/deploy_from_s3.sh "$URI" \
+          '
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF_UNIT
+          )
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Instalar unit gsms-release-sync" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"echo '${B64_UNIT}' | base64 -d | sudo tee /etc/systemd/system/gsms-release-sync.service >/dev/null\",
+              \"sudo chmod 644 /etc/systemd/system/gsms-release-sync.service\",
+              \"sudo systemctl daemon-reload\",
+              \"sudo systemctl enable gsms-release-sync.service\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          echo "CommandId: ${CMD_ID}"
+
+
+
+      - name: Preflight S3 desde EC2 (permisos/alcance)
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_URI="${{ steps.meta.outputs.release_uri }}"
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "GSMS Preflight S3 read" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"echo Testing: ${RELEASE_URI}\",
+              \"aws s3 ls '${RELEASE_URI}/' --recursive > /tmp/ls.out 2>/tmp/ls.err || true\",
+              \"echo '--- ls.rc:' $?\",
+              \"echo '--- ls.err:'; sed -n '1,50p' /tmp/ls.err || true\",
+              \"echo '--- ls.out (head):'; sed -n '1,10p' /tmp/ls.out || true\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          for id in "${IDS[@]}"; do
+            for i in {1..20}; do
+              STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo unknown)
+              [[ "$STATUS" == "Success" || "$STATUS" == "Cancelled" || "$STATUS" == "Failed" || "$STATUS" == "TimedOut" ]] && break
+              sleep 3
+            done
+            echo "---- Resultado en $id ----"
+            aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}" --output text || true
+            echo "---------------------------"
+          done
+
+      - name: Instalar/actualizar gsms-web.service (desde repo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+
+          # Lee el unit del repo y lo envía a las instancias (base64 para evitar problemas de quoting)
+          B64_UNIT="$(base64 -w0 deploy/systemd/gsms-web.service)"
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Instalar/actualizar gsms-web.service" \
+            --parameters "{\"commands\":[
+              \"set -euo pipefail\",
+              \"echo '${B64_UNIT}' | base64 -d | sudo tee /etc/systemd/system/gsms-web.service >/dev/null\",
+              \"sudo chmod 644 /etc/systemd/system/gsms-web.service\",
+              \"sudo systemctl daemon-reload\",
+              \"sudo systemctl enable gsms-web.service\",
+              \"sudo systemctl restart gsms-web.service\",
+              \"sudo systemctl --no-pager --full status gsms-web.service | tail -n 80 || true\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          echo "CommandId: ${CMD_ID}"
+
+
+      - name: Desplegar release en EC2 vía SSM
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          RELEASE_URI="${{ steps.meta.outputs.release_uri }}"
+          echo "Enviando deploy a: ${IDS[*]}"
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "GSMS Deploy ${GITHUB_SHA}" \
+            --parameters "{\"commands\":[
+              \"set -e\",
+              \"echo 'Deploying ${RELEASE_URI}'\",
+              \"/usr/local/bin/deploy_from_s3.sh ${RELEASE_URI}\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          echo "cmd_id=${CMD_ID}" >> $GITHUB_OUTPUT
+          echo "CommandId: ${CMD_ID}"
+
+      - name: Esperar y verificar despliegue SSM
+        shell: bash
+        run: |
+          set -euo pipefail
+          CMD_ID="${{ steps.deploy.outputs.cmd_id }}"
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          FAIL=0
+
+          for id in "${IDS[@]}"; do
+            echo "Esperando resultado en $id ..."
+            for i in {1..40}; do
+              OUT=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" || true)
+              STATUS=$(echo "$OUT" | jq -r '.Status // "Unknown"')
+              if [[ "$STATUS" == "Success" ]]; then
+                echo "OK $id"
+                break
+              fi
+              if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+                echo "Fallo en $id, status=$STATUS"
+                echo "$OUT"
+                FAIL=1
+                break
+              fi
+              sleep 6
+            done
+          done
+
+          if [[ $FAIL -ne 0 ]]; then
+            echo "ERROR: Alguna instancia falló en el despliegue."
+            exit 1
+          fi
+
+      # ----------------------- NUEVA SECCIÓN: REINICIO -----------------------
+      - name: Reboot instances (optional)
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          echo "Reiniciando: ${IDS[*]}"
+          aws ec2 reboot-instances --instance-ids "${IDS[@]}"
+
+      - name: Wait for instances to pass status checks
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          echo "Esperando a que las instancias pasen instance-status-ok..."
+          # Espera a que arranquen y pasen los 2 checks (system & instance)
+          aws ec2 wait instance-status-ok --instance-ids "${IDS[@]}"
+          echo "Checks OK"
+
+      - name: Instance Refresh
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          if [[ -n "${ASG_NAME}" ]]; then
+            echo "Iniciando Instance Refresh en ASG ${ASG_NAME} ..."
+            aws autoscaling start-instance-refresh --auto-scaling-group-name "${ASG_NAME}" --preferences '{"MinHealthyPercentage":100,"InstanceWarmup":120}'
+            echo "Instance Refresh iniciado (si aplica)."
+          else
+            echo "No se definió ASG_NAME; se omite Instance Refresh."
+          fi
+
+      - name: Post-reboot healthcheck via SSM
+        if: ${{ env.REBOOT_AFTER_DEPLOY == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "${{ steps.targets.outputs.instance_ids }}"
+          echo "Ejecutando healthcheck /health en cada instancia..."
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${IDS[@]}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "GSMS post-reboot healthcheck" \
+            --parameters "{\"commands\":[
+              \"for i in {1..20}; do curl -fsS --max-time 3 http://127.0.0.1:8000/health && exit 0; sleep 3; done; echo HEALTHCHECK_FAILED; exit 1\"
+            ]}" \
+            --query "Command.CommandId" --output text)
+
+          FAIL=0
+          for id in "${IDS[@]}"; do
+            for i in {1..30}; do
+              STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$id" --query "Status" --output text || echo "Unknown")
+              if [[ "$STATUS" == "Success" ]]; then
+                echo "Health OK en $id"
+                break
+              fi
+              if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+                echo "Health FAILED en $id"
+                FAIL=1
+                break
+              fi
+              sleep 5
+            done
+          done
+          [[ $FAIL -eq 0 ]]
+
+      # ----------------------------------------------------------------------
+
+      - name: Fin
+        run: echo "Despliegue completado correctamente en todas las instancias."
