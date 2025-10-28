@@ -97,13 +97,13 @@ jobs:
           echo "[s3] src sync (primeras 50 líneas)"; sed -n '1,50p' "${LOG_DIR}/s3_sync_src.log" || true
 
           aws s3 sync "${S3_PATH%/}/" "${APP_DIR}/" \
-            --delete --exclude "src/*" --exclude "releases/*" --exclude ".git/*" \
+            --delete --exclude "src/" --exclude "releases/" --exclude ".git/*" \
             --no-progress --only-show-errors \
             > "${LOG_DIR}/s3_sync_root.log" 2>&1 || true
           echo "[s3] root sync (primeras 50 líneas)"; sed -n '1,50p' "${LOG_DIR}/s3_sync_root.log" || true
 
           chown -R ${USER_SVC}:${USER_SVC} "${APP_DIR}"
-          find "${APP_DIR}" -type d -name "__pycache__" -exec rm -rf {} + || true
+          find "${APP_DIR}" -type d -name "_pycache_" -exec rm -rf {} + || true
 
           REQ_FILE=""
           [ -f "${APP_DIR}/requirements.txt" ] && REQ_FILE="${APP_DIR}/requirements.txt"
