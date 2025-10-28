@@ -160,10 +160,10 @@ async def lifespan(app: FastAPI):
                 else:
                     print("[STARTUP] 📄 Database empty, importing geofences...")
                     
-                    created, updated, skipped, failed = geofence_importer.import_from_file(
-                        db=db,
-                        filepath=str(geofence_file),
-                        mode='skip'
+                    # Use the GeofenceImporter class (already imported) with the active DB session
+                    importer = GeofenceImporter(db)
+                    created, updated, skipped, failed = importer.import_from_file(
+                        str(geofence_file)
                     )
                     
                     print(f"[STARTUP] ✅ Geofence import complete:")
@@ -214,43 +214,6 @@ app = FastAPI(
     version=settings.PROJECT_VERSION,
     lifespan=lifespan
 )
-
-
-# ------------------------------------------------------------
-# Middleware: Strip ROOT_PATH prefix for path-based routing
-# Required for ALB path-based routing (e.g., /dev/chris -> /)
-# ------------------------------------------------------------
-class StripPrefixMiddleware(BaseHTTPMiddleware):
-    """
-    Strips the ROOT_PATH prefix from incoming requests and redirects
-    bare prefix requests to prefix+"/".
-    
-    Example with ROOT_PATH="/dev/chris":
-        /dev/chris         -> Redirect to /dev/chris/ (307)
-        /dev/chris/        -> Pass to app as "/"
-        /dev/chris/health  -> Pass to app as "/health"
-    """
-    def __init__(self, app, prefix: str):
-        super().__init__(app)
-        self.prefix = (prefix or "").rstrip("/")
-
-    async def dispatch(self, request, call_next):
-        if self.prefix:
-            path = request.url.path
-            
-            # Redirect /dev/chris -> /dev/chris/
-            if path == self.prefix:
-                return RedirectResponse(url=self.prefix + "/", status_code=307)
-            
-            # Strip prefix: /dev/chris/health -> /health
-            if path.startswith(self.prefix + "/"):
-                request.scope["path"] = path[len(self.prefix):] or "/"
-        
-        return await call_next(request)
-
-if ROOT_PATH:
-    print(f"[STARTUP] 🛠️  Adding StripPrefixMiddleware for ROOT_PATH='{ROOT_PATH}'")
-    app.add_middleware(StripPrefixMiddleware, prefix=ROOT_PATH)
 
 
 # ------------------------------------------------------------
