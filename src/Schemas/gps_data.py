@@ -40,6 +40,12 @@ Inherits all fields from the base schema with required validations.
 class GpsData_create(GpsData_base):
     pass
 
+"""
+Schema for updating existing GPS records.
+All fields are optional to support partial updates.
+"""
+class GpsData_update(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
 """
 Schema for updating existing GPS records.
