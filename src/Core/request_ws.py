@@ -97,15 +97,17 @@ class RequestWebSocketManager(WebSocketManager):
             "ping",
             "get_devices",
             "get_history",
-            "get_timestamp_range"
+            "get_timestamp_range",
+            "get_trips" 
         ]
 
         if action in SIMPLE_ACTIONS:
             handler_map = {
                 "ping": handlers.handle_ping,
                 "get_devices": handlers.handle_get_devices,
+                "get_timestamp_range": handlers.handle_get_timestamp_range,
                 "get_history": handlers.handle_get_history,
-                "get_timestamp_range": handlers.handle_get_timestamp_range
+                "get_trips": handlers.handle_get_trips
             }
             response = handler_map[action](params, request_id)
             add_response(response)

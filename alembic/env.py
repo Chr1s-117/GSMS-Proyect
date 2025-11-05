@@ -10,13 +10,16 @@ from src.Models.gps_data import GPS_data
 from src.Models.device import Device
 from src.Models.geofence import Geofence  
 from src.Models.accelerometer_data import AccelerometerData
+from src.Models.trip import Trip
 from sqlalchemy import MetaData
-import geoalchemy2  # Asegura que GeoAlchemy2 esté importado para las migraciones
+import geoalchemy2  
 
 _ = GPS_data.__table__
 _ = Device.__table__  
 _ = Geofence.__table__  
 _ = AccelerometerData.__table__
+_ = Trip.__table__  
+
 """
 load environment variables from .env file
 """

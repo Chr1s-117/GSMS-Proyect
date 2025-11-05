@@ -13,6 +13,16 @@ class GpsData_base(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     DeviceID: str = Field(..., min_length=1, max_length=100, description="ID of the device that sent the GPS point")
+    
+    # ========================================
+    # NUEVO: Trip relationship
+    # ========================================
+    trip_id: Optional[str] = Field(
+        None, 
+        max_length=100,
+        description="ID of the trip this GPS belongs to (NULL for legacy data)"
+    )
+
     Latitude: float = Field(..., ge=-90, le=90, description="Latitude in decimal degrees")
     Longitude: float = Field(..., ge=-180, le=180, description="Longitude in decimal degrees")
     Altitude: float = Field(..., description="Altitude in meters above sea level")
@@ -39,6 +49,12 @@ class GpsData_update(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     DeviceID: Optional[str] = Field(None, min_length=1, max_length=100)
+    
+    # ========================================
+    # NUEVO: Trip relationship
+    # ========================================
+    trip_id: Optional[str] = Field(None, max_length=100)
+    
     Latitude: Optional[float] = Field(None, ge=-90, le=90)
     Longitude: Optional[float] = Field(None, ge=-180, le=180)
     Altitude: Optional[float] = None

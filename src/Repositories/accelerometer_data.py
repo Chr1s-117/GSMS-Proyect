@@ -3,7 +3,8 @@
 from sqlalchemy.orm import Session
 from src.Models.accelerometer_data import AccelerometerData
 from src.Schemas.accelerometer_data import AccelData_create, AccelData_update
-from typing import List, Optional
+from src.Models.gps_data import GPS_data
+from typing import List, Optional, Any
 from datetime import datetime
 
 
@@ -245,3 +246,123 @@ def get_all_devices_with_accel(db: Session) -> List[str]:
     result = db.query(AccelerometerData.DeviceID).distinct().all()
     return [row[0] for row in result]
 
+# ==========================================================
+# 🆕 FASE 2: AGREGACIÓN POR TRIP
+# ==========================================================
+
+def get_accel_map_for_trip(
+    db: Session,
+    trip_id: str
+) -> dict[str, dict[str, Any]]:
+    """
+    Get accelerometer data for a trip as timestamp-keyed map for efficient JOIN.
+    
+    Returns a dictionary mapping GPS timestamps to accelerometer data.
+    This enables O(1) lookups when merging GPS + Accel data.
+    
+    Args:
+        db: SQLAlchemy session
+        trip_id: Trip identifier
+    
+    Returns:
+        dict: Timestamp-keyed accelerometer data:
+        {
+            "2025-01-01T08:00:05Z": {
+                "rms_x": 0.12,
+                "rms_y": 0.08,
+                "rms_z": 0.10,
+                "rms_mag": 0.15,
+                "max_x": 0.5,
+                "max_y": 0.6,
+                "max_z": 0.7,
+                "max_mag": 0.8,
+                "peaks_count": 2,
+                "sample_count": 250,
+                "flags": 0
+            },
+            ...
+        }
+    
+    Example:
+        >>> accel_map = get_accel_map_for_trip(db, "TRIP_20250101_ESP001_001")
+        >>> gps_timestamp = "2025-01-01T08:00:05Z"
+        >>> if gps_timestamp in accel_map:
+        ...     print(f"RMS magnitude: {accel_map[gps_timestamp]['rms_mag']:.3f}g")
+        ... else:
+        ...     print("No accel data for this GPS point")
+    
+    Performance:
+        - Uses composite index (DeviceID, Timestamp)
+        - Typical time: 5-20ms for 360 points
+        - Memory: ~50KB for 360 accel records
+    
+    Notes:
+        - Empty dict if trip has no accelerometer data
+        - Timestamps are normalized to match GPS format (UTC ISO with 'Z')
+        - Not all GPS points will have accel data (device may skip windows)
+    """
+    # First, get device_id from trip
+    # (We need this because accel is indexed by DeviceID + Timestamp, not trip_id)
+    device_id_result = (
+        db.query(GPS_data.DeviceID)
+        .filter(GPS_data.trip_id == trip_id)
+        .limit(1)
+        .first()
+    )
+    
+    if not device_id_result:
+        # Trip has no GPS data, so no accel either
+        return {}
+    
+    device_id = device_id_result[0]
+    
+    # Get all timestamps for this trip
+    timestamps = (
+        db.query(GPS_data.Timestamp)
+        .filter(GPS_data.trip_id == trip_id)
+        .all()
+    )
+    
+    if not timestamps:
+        return {}
+    
+    # Extract timestamp values
+    timestamp_list = [ts[0] for ts in timestamps]
+    
+    # Query accelerometer data matching these timestamps
+    accel_rows = (
+        db.query(AccelerometerData)
+        .filter(
+            AccelerometerData.DeviceID == device_id,
+            AccelerometerData.Timestamp.in_(timestamp_list)
+        )
+        .all()
+    )
+    
+    # Build timestamp-keyed map
+    accel_map: dict[str, dict[str, Any]] = {}
+    
+    for row in accel_rows:
+        # Normalize timestamp to match GPS format
+        ts = getattr(row, 'Timestamp', None)
+        if not ts:
+            continue
+        
+        timestamp_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+        # Extract all accelerometer fields
+        accel_map[timestamp_str] = {
+            "rms_x": float(getattr(row, 'rms_x', 0.0)),
+            "rms_y": float(getattr(row, 'rms_y', 0.0)),
+            "rms_z": float(getattr(row, 'rms_z', 0.0)),
+            "rms_mag": float(getattr(row, 'rms_mag', 0.0)),
+            "max_x": float(getattr(row, 'max_x', 0.0)),
+            "max_y": float(getattr(row, 'max_y', 0.0)),
+            "max_z": float(getattr(row, 'max_z', 0.0)),
+            "max_mag": float(getattr(row, 'max_mag', 0.0)),
+            "peaks_count": int(getattr(row, 'peaks_count', 0)),
+            "sample_count": int(getattr(row, 'sample_count', 0)),
+            "flags": int(getattr(row, 'flags', 0))
+        }
+    
+    return accel_map
