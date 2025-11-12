@@ -98,7 +98,6 @@ class GpsData_update(BaseModel):
 
 
 """
->>>>>>> c1e9bfa7c25bd40fab8e243eb393c10b5ddce3d2
 Schema for retrieving GPS data from the database.
 Includes the internal record identifier.
 """
