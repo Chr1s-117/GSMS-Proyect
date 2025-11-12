@@ -697,8 +697,4 @@ def get_full_gps_data_for_trip(
         
         result.append(point)
     
-<<<<<<< HEAD
     return result
-=======
-    return result
->>>>>>> c1e9bfa7c25bd40fab8e243eb393c10b5ddce3d2
