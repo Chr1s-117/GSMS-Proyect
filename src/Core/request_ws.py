@@ -82,8 +82,17 @@ class RequestWebSocketManager(WebSocketManager):
                 {"error": f"Unknown action '{action}'"},
                 status="error"
             ))
+            add_response(handlers.build_response(
+                action,
+                request_id,
+                {"error": f"Unknown action '{action}'"},
+                status="error"
+            ))
 
 
+# ==========================================================
+# Instancia única global
+# ==========================================================
 # ==========================================================
 # Instancia única global
 # ==========================================================
