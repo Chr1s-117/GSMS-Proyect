@@ -365,4 +365,8 @@ def get_accel_map_for_trip(
             "flags": int(getattr(row, 'flags', 0))
         }
     
+<<<<<<< HEAD
     return accel_map
+=======
+    return accel_map
+>>>>>>> c1e9bfa7c25bd40fab8e243eb393c10b5ddce3d2

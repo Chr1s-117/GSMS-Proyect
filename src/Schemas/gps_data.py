@@ -36,6 +36,35 @@ class GpsData_base(BaseModel):
 """
 Schema for creating new GPS data records.
 Inherits all fields from the base schema with required validations.
+<<<<<<< HEAD
+"""
+class GpsData_create(GpsData_base):
+    pass
+
+
+"""
+Schema for updating existing GPS records.
+All fields are optional to support partial updates.
+"""
+class GpsData_update(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    DeviceID: Optional[str] = Field(None, min_length=1, max_length=100)
+    
+    # ========================================
+    # NUEVO: Trip relationship
+    # ========================================
+    trip_id: Optional[str] = Field(None, max_length=100)
+    
+    Latitude: Optional[float] = Field(None, ge=-90, le=90)
+    Longitude: Optional[float] = Field(None, ge=-180, le=180)
+    Altitude: Optional[float] = None
+    Accuracy: Optional[float] = Field(None, ge=0)
+    Timestamp: Optional[datetime] = None
+
+
+"""
+=======
 """
 class GpsData_create(GpsData_base):
     pass
@@ -69,6 +98,7 @@ class GpsData_update(BaseModel):
 
 
 """
+>>>>>>> c1e9bfa7c25bd40fab8e243eb393c10b5ddce3d2
 Schema for retrieving GPS data from the database.
 Includes the internal record identifier.
 """
