@@ -307,20 +307,51 @@ def handle_get_devices(params: Dict[str, Any], request_id: str) -> dict:
 
 def handle_get_last_positions(params: Dict[str, Any], request_id: str) -> dict:
     """
-    Obtiene el último GPS de cada dispositivo.
+    ✅ CORREGIDO: Handler stateless para obtener últimas posiciones.
+    
+    Frontend hace polling cada 5 segundos enviando este request.
+    Backend:
+    1. Consulta DB
+    2. Envía GPS por /gps (usando add_gps) ← ARQUITECTURA CORRECTA
+    3. Retorna confirmación por /response
+    
+    Returns (por /response):
+        {
+            "message": "GPS data sent via /gps channel",
+            "count": 3
+        }
+    
+    GPS data se envía por /gps (respetando arquitectura de canales).
     """
     try:
         with SessionLocal() as db:
-            last_positions = get_last_gps_all_devices(db)
+            # Query DB: Obtener última posición de cada device
+            last_positions = get_last_gps_all_devices(db, include_id=False)
+            
+            # ✅ CORRECTO: Enviar cada GPS por canal /gps
             count = 0
             for device_id, gps_data in last_positions.items():
-                add_gps(gps_data)
+                add_gps(gps_data)  # ← Envía a GPSBroadcaster → /gps
                 count += 1
-        return build_response("get_last_positions", request_id, {"message": "Last positions sent", "count": count})
+            
+            # Retornar confirmación por /response (NO los GPS)
+            data = {
+                "message": "GPS data sent via /gps channel",
+                "count": count
+            }
+            
+            print(f"[HANDLER] get_last_positions: {count} GPS enviados por /gps")
+        
+        return build_response("get_last_positions", request_id, data)
+    
     except Exception as e:
-        return build_response("get_last_positions", request_id, {"error": str(e)}, status="error")
-
-
+        print(f"[HANDLER] get_last_positions ERROR: {e}")
+        return build_response(
+            "get_last_positions", 
+            request_id, 
+            {"error": str(e)}, 
+            status="error"
+        )
 # ==========================================================
 # SECCIÓN 2.2.5: Handler de Rango de Timestamps (NUEVO)
 # ==========================================================
