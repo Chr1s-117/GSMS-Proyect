@@ -1,33 +1,42 @@
-# ==========================================================
-# Archivo: src/Services/request_handlers.py
-# Descripción:
-#   Handlers de requests WebSocket/HTTP para GPS/RouteManager
-#   Funciones puras, sin estado global, con manejo de errores
-# ==========================================================
+# src/Services/request_handlers.py
+"""
+Trip Query Handlers for REST API
+=================================
 
-from typing import Dict, Any, List, Optional
+This module contains complex trip query logic (temporal/spatial/hybrid queries)
+that is reused by the REST endpoint GET /gps_data/trips.
+
+All other handlers have been removed as they were only used by WebSocket endpoints,
+which have been migrated to direct REST implementations in gps_datas.py.
+
+Remaining handler:
+- handle_get_trips: Complex multi-mode trip queries (used by GET /gps_data/trips)
+"""
+
+from typing import Dict, Any, List
 from datetime import datetime
 from src.DB.session import SessionLocal
-from src.Repositories.gps_data import (
-    get_all_devices,
-    get_last_gps_all_devices,
-    get_gps_data_in_range_by_device,
-    get_unique_trip_ids_near_location  # ← NUEVO
-)
-from src.Repositories.trip import (
-    get_trips_in_time_range,  # ← NUEVO
-    get_trip_by_id  # ← NUEVO
-)
-from src.Services.gps_broadcaster import add_gps
-from src.Services.trip_assembler import trip_assembler  # ← NUEVO
+from src.Repositories.gps_data import get_unique_trip_ids_near_location
+from src.Repositories.trip import get_trips_in_time_range, get_trip_by_id
+from src.Services.trip_assembler import trip_assembler
 
 
 # ==========================================================
-# Función Auxiliar Global
+# RESPONSE BUILDER
 # ==========================================================
+
 def build_response(action: str, request_id: str, data: Any, status: str = "success") -> Dict[str, Any]:
     """
-    Construye respuesta estandarizada.
+    Build standardized response for REST endpoints.
+    
+    Args:
+        action: Action name (e.g., "get_trips")
+        request_id: Unique request identifier
+        data: Response payload
+        status: "success" or "error"
+        
+    Returns:
+        Standardized response dict
     """
     return {
         "action": action,
@@ -38,7 +47,7 @@ def build_response(action: str, request_id: str, data: Any, status: str = "succe
 
 
 # ==========================================================
-# 🆕 FASE 4: FUNCIONES AUXILIARES PARA QUERIES
+# QUERY MODE HELPERS
 # ==========================================================
 
 def _determine_query_mode(params: Dict[str, Any]) -> str:
@@ -105,6 +114,42 @@ def _parse_datetime(value: Any, param_name: str) -> datetime:
         return datetime.fromisoformat(dt_str)
     except Exception as e:
         raise ValueError(f"Invalid datetime format for '{param_name}': {value}") from e
+
+
+# ==========================================================
+# TRIP ID RETRIEVAL (BY MODE)
+# ==========================================================
+
+def _get_trip_ids_single(db: Any, params: Dict[str, Any]) -> List[str]:
+    """
+    Get single trip ID from direct trip_id parameter.
+    
+    Args:
+        db: SQLAlchemy session (not used, for consistency)
+        params: Request parameters with 'trip_id'
+    
+    Returns:
+        list[str]: Single-element list with the trip_id
+    
+    Raises:
+        ValueError: If trip_id is missing or invalid
+    """
+    trip_id = params.get('trip_id')
+    
+    if not trip_id:
+        raise ValueError("'trip_id' parameter is required for single trip query")
+    
+    if not isinstance(trip_id, str):
+        raise ValueError(f"'trip_id' must be a string, got {type(trip_id).__name__}")
+    
+    trip_id = trip_id.strip()
+    
+    if not trip_id:
+        raise ValueError("'trip_id' cannot be empty")
+    
+    print(f"[SINGLE] Requesting trip: {trip_id}")
+    
+    return [trip_id]
 
 
 def _get_trip_ids_temporal(db: Any, params: Dict[str, Any]) -> List[str]:
@@ -245,267 +290,45 @@ def _get_trip_ids_hybrid(db: Any, params: Dict[str, Any]) -> List[str]:
     
     return list(matching_trip_ids)
 
-def _get_trip_ids_single(db: Any, params: Dict[str, Any]) -> List[str]:
-    """
-    Get single trip ID from direct trip_id parameter.
-    
-    Args:
-        db: SQLAlchemy session (not used, for consistency)
-        params: Request parameters with 'trip_id'
-    
-    Returns:
-        list[str]: Single-element list with the trip_id
-    
-    Raises:
-        ValueError: If trip_id is missing or invalid
-    """
-    trip_id = params.get('trip_id')
-    
-    if not trip_id:
-        raise ValueError("'trip_id' parameter is required for single trip query")
-    
-    if not isinstance(trip_id, str):
-        raise ValueError(f"'trip_id' must be a string, got {type(trip_id).__name__}")
-    
-    trip_id = trip_id.strip()
-    
-    if not trip_id:
-        raise ValueError("'trip_id' cannot be empty")
-    
-    print(f"[SINGLE] Requesting trip: {trip_id}")
-    
-    return [trip_id]
 
 # ==========================================================
-# SECCIÓN 2.1: Handlers Simples (sin DB)
-# ==========================================================
-def handle_ping(params: Dict[str, Any], request_id: str) -> dict:
-    """
-    Health check simple.
-    """
-    try:
-        return build_response("ping", request_id, "pong")
-    except Exception as e:
-        return build_response("ping", request_id, {"error": str(e)}, status="error")
-
-
-# ==========================================================
-# SECCIÓN 2.2: Handlers con DB (queries simples)
-# ==========================================================
-def handle_get_devices(params: Dict[str, Any], request_id: str) -> dict:
-    """
-    Lista dispositivos registrados en la tabla 'devices'.
-    """
-    try:
-        with SessionLocal() as db:
-            devices = get_all_devices(db)
-            data = {"devices": devices, "count": len(devices)}
-        return build_response("get_devices", request_id, data)
-    except Exception as e:
-        return build_response("get_devices", request_id, {"error": str(e)}, status="error")
-
-
-def handle_get_last_positions(params: Dict[str, Any], request_id: str) -> dict:
-    """
-    ✅ CORREGIDO: Handler stateless para obtener últimas posiciones.
-    
-    Frontend hace polling cada 5 segundos enviando este request.
-    Backend:
-    1. Consulta DB
-    2. Envía GPS por /gps (usando add_gps) ← ARQUITECTURA CORRECTA
-    3. Retorna confirmación por /response
-    
-    Returns (por /response):
-        {
-            "message": "GPS data sent via /gps channel",
-            "count": 3
-        }
-    
-    GPS data se envía por /gps (respetando arquitectura de canales).
-    """
-    try:
-        with SessionLocal() as db:
-            # Query DB: Obtener última posición de cada device
-            last_positions = get_last_gps_all_devices(db, include_id=False)
-            
-            # ✅ CORRECTO: Enviar cada GPS por canal /gps
-            count = 0
-            for device_id, gps_data in last_positions.items():
-                add_gps(gps_data)  # ← Envía a GPSBroadcaster → /gps
-                count += 1
-            
-            # Retornar confirmación por /response (NO los GPS)
-            data = {
-                "message": "GPS data sent via /gps channel",
-                "count": count
-            }
-            
-            print(f"[HANDLER] get_last_positions: {count} GPS enviados por /gps")
-        
-        return build_response("get_last_positions", request_id, data)
-    
-    except Exception as e:
-        print(f"[HANDLER] get_last_positions ERROR: {e}")
-        return build_response(
-            "get_last_positions", 
-            request_id, 
-            {"error": str(e)}, 
-            status="error"
-        )
-# ==========================================================
-# SECCIÓN 2.2.5: Handler de Rango de Timestamps (NUEVO)
-# ==========================================================
-def handle_get_timestamp_range(params: Dict[str, Any], request_id: str) -> dict:
-    """
-    Obtiene el rango de timestamps disponibles (más antiguo y más nuevo).
-    
-    Params:
-        - device_id: str (opcional)
-            - Si se especifica: rango de ese device
-            - Si no: rango global de todos los devices activos
-    
-    Returns:
-        {
-            "oldest_timestamp": "2025-01-01T00:00:00Z",
-            "newest_timestamp": "2025-10-21T15:30:00Z",
-            "device_id": "TRUCK-001" o null,
-            "span_seconds": 25920000
-        }
-    """
-    try:
-        device_id = params.get("device_id")
-        
-        with SessionLocal() as db:
-            if device_id:
-                # Rango de un device específico
-                from src.Repositories.gps_data import get_oldest_gps_row_by_device, get_last_gps_row_by_device
-                oldest = get_oldest_gps_row_by_device(db, device_id)
-                newest = get_last_gps_row_by_device(db, device_id)
-                
-                if not oldest or not newest:
-                    return build_response(
-                        "get_timestamp_range",
-                        request_id,
-                        {"error": f"No GPS data for device '{device_id}'"},
-                        status="error"
-                    )
-            else:
-                # Rango global
-                from src.Repositories.gps_data import get_global_oldest_gps, get_global_newest_gps
-                oldest = get_global_oldest_gps(db)
-                newest = get_global_newest_gps(db)
-                
-                if not oldest or not newest:
-                    return build_response(
-                        "get_timestamp_range",
-                        request_id,
-                        {"error": "No GPS data available"},
-                        status="error"
-                    )
-            
-            # Calcular span
-            oldest_dt = datetime.fromisoformat(oldest["Timestamp"].replace("Z", "+00:00"))
-            newest_dt = datetime.fromisoformat(newest["Timestamp"].replace("Z", "+00:00"))
-            span_seconds = (newest_dt - oldest_dt).total_seconds()
-            
-            data = {
-                "oldest_timestamp": oldest["Timestamp"],
-                "newest_timestamp": newest["Timestamp"],
-                "device_id": device_id,
-                "span_seconds": int(span_seconds)
-            }
-            
-        return build_response("get_timestamp_range", request_id, data)
-    
-    except Exception as e:
-        return build_response(
-            "get_timestamp_range",
-            request_id,
-            {"error": str(e)},
-            status="error"
-        )
-
-# ==========================================================
-# 🆕 FASE 4: HANDLER UNIFICADO DE TRIPS
+# PUBLIC HANDLER
 # ==========================================================
 
 def handle_get_trips(params: Dict[str, Any], request_id: str) -> dict:
     """
     Unified handler for trip queries.
     
-    Supports 3 query modes:
-    1. TEMPORAL: start + end (time range)
-    2. SPATIAL: center + radius_meters (location proximity)
-    3. HYBRID: start + end + center + radius_meters (both filters)
+    Supports 4 query modes:
+    1. SINGLE: trip_id
+    2. TEMPORAL: start + end (time range)
+    3. SPATIAL: center + radius_meters (location proximity)
+    4. HYBRID: start + end + center + radius_meters (both filters)
     
     Optional filter: device_id (for all modes)
     
     Args:
-        params: Request parameters:
-            - start (str): ISO timestamp for temporal filter
-            - end (str): ISO timestamp for temporal filter
-            - center (dict): {"lat": float, "lon": float} for spatial filter
-            - radius_meters (float): Search radius for spatial filter
-            - device_id (str, optional): Filter by specific device
+        params: Request parameters (see mode descriptions above)
         request_id: Unique request identifier
     
     Returns:
-        dict: Response with action, request_id, status, and data:
-        {
-            "action": "get_trips",
-            "request_id": "...",
-            "status": "success",
-            "data": {
-                "trips": [...],
-                "summary": {...}
-            }
-        }
+        dict: Standardized response with trips data and summary
     
-    Example Requests:
-    
-       # Single trip query (by ID)
-        {
-            "action": "get_trips",
-            "params": {
-                "trip_id": "TRIP_20251104_TESTDEVICE_021331"
-            }
-        }
+    Example Usage:
+        # From REST endpoint
+        result = handle_get_trips(
+            params={
+                'start': '2025-01-12T00:00:00Z',
+                'end': '2025-01-12T23:59:59Z',
+                'device_id': 'TRUCK-001'
+            },
+            request_id='http_request'
+        )
         
-        # Temporal query
-        {
-            "action": "get_trips",
-            "params": {
-                "start": "2025-01-01T00:00:00Z",
-                "end": "2025-01-31T23:59:59Z",
-                "device_id": "ESP001"
-            }
-        }
-        
-        # Spatial query
-        {
-            "action": "get_trips",
-            "params": {
-                "center": {"lat": 10.9878, "lon": -74.7889},
-                "radius_meters": 500
-            }
-        }
-        
-        # Hybrid query
-        {
-            "action": "get_trips",
-            "params": {
-                "start": "2025-01-01T00:00:00Z",
-                "end": "2025-01-31T23:59:59Z",
-                "center": {"lat": 10.9878, "lon": -74.7889},
-                "radius_meters": 500,
-                "device_id": "ESP001"
-            }
-        }
-    
-    Error Handling:
-        - Invalid parameters → status: "error"
-        - No trips found → status: "success", empty trips array
-        - Database errors → status: "error"
+        if result['status'] == 'success':
+            return result['data']
+        else:
+            raise HTTPException(400, result['data']['error'])
     """
     try:
         # ========================================
@@ -575,80 +398,5 @@ def handle_get_trips(params: Dict[str, Any], request_id: str) -> dict:
             "get_trips",
             request_id,
             {"error": f"Internal server error: {str(e)}"},
-            status="error"
-        )
-
-# ==========================================================
-# SECCIÓN 2.3: Handler Complejo (history)
-# ==========================================================
-def handle_get_history(params: Dict[str, Any], request_id: str) -> dict:
-    """
-    Obtiene histórico GPS entre dos fechas con información de geocerca.
-    """
-    try:
-        start_str = params.get("start")
-        end_str = params.get("end")
-        device_id = params.get("device_id")
-        format_type = params.get("format", "polyline")
-
-        if not start_str or not end_str:
-            raise ValueError("Missing 'start' or 'end' parameter")
-
-        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-
-        with SessionLocal() as db:
-            if device_id:
-                # Histórico de un device específico
-                history = get_gps_data_in_range_by_device(db, device_id, start_dt, end_dt)
-                
-                if format_type == "polyline":
-                    polyline = []
-                    for p in history:
-                        if p.get("Latitude") is None or p.get("Longitude") is None:
-                            continue
-                        
-                        point = {
-                            "lat": p["Latitude"],
-                            "lon": p["Longitude"],
-                            "timestamp": p["Timestamp"]
-                        }
-                        
-                        if p.get("geofence"):
-                            point["geofence"] = p["geofence"]
-                        
-                        polyline.append(point)
-                    
-                    data = {
-                        "device_id": device_id,
-                        "start": start_str,
-                        "end": end_str,
-                        "count": len(polyline),
-                        "polyline": polyline
-                    }
-                else:
-                    data = {
-                        "device_id": device_id,
-                        "start": start_str,
-                        "end": end_str,
-                        "count": len(history),
-                        "history": history
-                    }
-            else:
-                # Histórico de TODOS los devices (legacy)
-                from src.Repositories.gps_data import get_gps_data_in_range
-                history = get_gps_data_in_range(db, start_dt, end_dt)
-                data = {
-                    "count": len(history),
-                    "history": history
-                }
-        
-        return build_response("get_history", request_id, data)
-    
-    except Exception as e:
-        return build_response(
-            "get_history",
-            request_id,
-            {"error": str(e)},
             status="error"
         )

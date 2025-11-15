@@ -38,7 +38,14 @@ from src.Models.device import Device
 
 # Imports de logging
 from src.Core import log_ws
+
+# ============================================================
+# ✨ NUEVO: Import de cache_manager para invalidación
+# ============================================================
+from src.Services.cache_manager import cache_manager
+
 from datetime import datetime
+
 
 def insert_data(
     db: Session,
@@ -56,12 +63,14 @@ def insert_data(
     3. Incrementar point_count del trip (si aplica)
     4. Actualizar LastSeen del device
     5. Commit de la transacción
-    6. Log del resultado
+    6. ✨ NUEVO: Invalidar caché HTTP completo
+    7. Log del resultado
     
     Filosofía de errores:
     - Accel es "nice to have" → si falla, continúa con GPS
     - GPS es crítico → si falla, rollback completo
     - Duplicados son silenciosos (no son errores reales)
+    - Cache invalidation es non-blocking (GPS ya insertado)
     
     ⚠️ IMPORTANTE: Orden de Inserción
     Accel se inserta PRIMERO para que:
@@ -83,34 +92,12 @@ def insert_data(
             - (False, False): Nada insertado (GPS duplicado)
             - (False, True): Imposible (accel se rollback si GPS falla)
             
-    Examples:
-        >>> # Insertar GPS + Accel
-        >>> gps_inserted, accel_inserted = insert_data(
-        ...     db=db,
-        ...     gps_data=gps_data,
-        ...     accel_data=accel_data,
-        ...     device_record=device,
-        ...     trip_id="TRIP_20241027_120530_ESP32_001"
-        ... )
-        >>> if gps_inserted:
-        ...     print("GPS guardado exitosamente")
-        >>> if accel_inserted:
-        ...     print("Accel guardado exitosamente")
-        
-        >>> # Insertar solo GPS (sin accel)
-        >>> gps_inserted, _ = insert_data(
-        ...     db=db,
-        ...     gps_data=gps_data,
-        ...     accel_data=None,
-        ...     device_record=device,
-        ...     trip_id=None
-        ... )
-        
     Side Effects:
         - Inserta registros en tabla gps_data
         - Inserta registros en tabla accelerometer_data (si accel_data)
         - Incrementa point_count en tabla trips (si trip_id)
         - Actualiza LastSeen en tabla devices
+        - Invalida cache HTTP completo (cache_manager.clear())
         - Escribe logs via log_ws.log_from_thread()
         
     Notes:
@@ -118,6 +105,7 @@ def insert_data(
         - Si GPS falla, se hace rollback() completo (incluye accel si se insertó)
         - Duplicados GPS/Accel son silenciosos (no logueados como errores)
         - trip_id se agrega DESPUÉS de validación Pydantic (no está en schema)
+        - Cache se invalida DESPUÉS del commit (crítico para consistencia)
     """
     device_id = gps_data.DeviceID
     
@@ -181,7 +169,28 @@ def insert_data(
         db.commit()
         
         # ========================================
-        # PASO 5: LOG DEL RESULTADO
+        # ✨ PASO 5: INVALIDAR CACHÉ HTTP (KISS)
+        # ========================================
+        # CRITICAL: Invalidar caché DESPUÉS del commit
+        # Si se invalida antes y commit falla, el frontend
+        # recibiría cache inválido cuando los datos NO se insertaron.
+        
+        try:
+            # KISS: Clear todo el cache
+            # Razón: Garantiza que NO hay datos stale en ningún endpoint
+            # Costo: Algunos cache misses extras (aceptable)
+            cache_manager.clear()
+            
+            print(f"[CACHE] Cleared (GPS from '{device_id}')")
+            
+        except Exception as cache_error:
+            # Error invalidando caché - NO es crítico
+            # El GPS ya está insertado, el caché se auto-limpiará con TTL (300s)
+            print(f"[CACHE] Warning: Cache invalidation failed: {cache_error}")
+            # NO hacer raise - el GPS se insertó exitosamente
+        
+        # ========================================
+        # PASO 6: LOG DEL RESULTADO
         # ========================================
         insert_summary = f"GPS (ID: {new_row.id})"
         if accel_inserted:
@@ -229,7 +238,6 @@ def insert_data(
 # ==========================================================
 # HELPER: BATCH INSERT (FUTURO)
 # ==========================================================
-
 def insert_data_batch(
     db: Session,
     gps_batch: list[GpsData_create],

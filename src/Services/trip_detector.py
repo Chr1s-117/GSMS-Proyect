@@ -25,20 +25,17 @@ Decision Logic (KISS):
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 from math import radians, cos, sin, asin, sqrt
-
+from src.Core.config import settings  
 
 # ==========================================================
-# CONSTANTES CONFIGURABLES
+# 📝 NOTA: Constantes ahora en src/Core/config.py
 # ==========================================================
-
-# Umbrales espaciales
-JUMP_THRESHOLD = 2000  # metros - Salto imposible (error GPS o device restart)
-STILL_THRESHOLD = 50   # metros - Considerar vehículo "quieto" (compensa ruido GPS)
-
-# Umbrales temporales para parking
-GPS_INTERVAL = 5       # segundos - Intervalo esperado entre GPS
-PARKING_TIME = 20 * 60 # segundos - 20 minutos quieto = parking
-STILL_GPS_REQUIRED = int(PARKING_TIME / GPS_INTERVAL)  # 240 GPS consecutivos
+# Para calibrar el sistema de detección de trips:
+# - TRIP_JUMP_THRESHOLD_M: Umbral de salto espacial
+# - TRIP_STILL_THRESHOLD_M: Umbral de movimiento mínimo
+# - TRIP_PARKING_TIME_S: Tiempo quieto para parking
+# - TRIP_GPS_INTERVAL_S: Intervalo entre GPS
+# ==========================================================
 
 
 # ==========================================================
@@ -66,19 +63,25 @@ class TripDetector:
     """
     Stateful trip detection engine.
     """
-
     def __init__(self):
-        self.jump_threshold_meters = JUMP_THRESHOLD
-        self.still_threshold_meters = STILL_THRESHOLD
-        self.still_gps_required = STILL_GPS_REQUIRED
-
+        # Cargar umbrales desde configuración centralizada
+        self.jump_threshold_meters = settings.TRIP_JUMP_THRESHOLD_M
+        self.still_threshold_meters = settings.TRIP_STILL_THRESHOLD_M
+        
+        # Calcular GPS requeridos para parking
+        self.still_gps_required = int(
+            settings.TRIP_PARKING_TIME_S / settings.TRIP_GPS_INTERVAL_S
+        )
+        
+        # Log de configuración cargada
         print(f"[TRIP_DETECTOR] Initialized with thresholds:")
         print(f"[TRIP_DETECTOR]   - Spatial jump: {self.jump_threshold_meters} m")
         print(f"[TRIP_DETECTOR]   - Still threshold: {self.still_threshold_meters} m")
-        print(f"[TRIP_DETECTOR]   - Parking detection: {self.still_gps_required} GPS (~{PARKING_TIME/60:.0f} min)")
-
-        # Estado por dispositivo (stateful approach)
-        self.device_states = {}  # {device_id: DeviceState}
+        print(f"[TRIP_DETECTOR]   - Parking detection: {self.still_gps_required} GPS "
+            f"(~{settings.TRIP_PARKING_TIME_S/60:.0f} min)")
+        
+        # Estado por dispositivo
+        self.device_states = {}
 
     def _get_device_state(self, device_id: str) -> Dict[str, Any]:
         """
@@ -269,7 +272,7 @@ class TripDetector:
                     'action': 'close_and_create_parking',
                     'trip_type': 'parking',
                     'reason': f'Vehicle still for {new_counter} GPS '
-                            f'({PARKING_TIME/60:.0f} min) - Creating parking',
+                            f'({settings.TRIP_PARKING_TIME_S/60:.0f} min) - Creating parking',
                     'trip_id': self._generate_trip_id(device_id, current_time, 'parking'),
                     'close_previous': True,
                     'consecutive_still_gps': new_counter
@@ -290,7 +293,7 @@ class TripDetector:
                 return {
                     'action': 'create_parking',
                     'trip_type': 'parking',
-                    'reason': f'Creating parking after {new_counter} GPS still ({PARKING_TIME/60:.0f} min)',
+                    'reason': f'Creating parking after {new_counter} GPS still ({settings.TRIP_PARKING_TIME_S/60:.0f} min)',
                     'trip_id': self._generate_trip_id(device_id, current_time, 'parking'),
                     'close_previous': False,
                     'consecutive_still_gps': new_counter
