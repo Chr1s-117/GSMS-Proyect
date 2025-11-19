@@ -24,7 +24,9 @@ def serialize_gps_row(row: GPS_data | None, include_id: bool = False) -> dict[st
     # Normalizar timestamp (UTC ISO 8601 con 'Z')
     ts = data.get("Timestamp")
     if isinstance(ts, datetime):
-        data["Timestamp"] = ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        iso_str = ts.astimezone(timezone.utc).isoformat()
+        # Reemplazar +00:00 por Z (estándar ISO 8601 con Z)
+        data["Timestamp"] = iso_str.replace('+00:00', 'Z')
     else:
         data["Timestamp"] = None
 

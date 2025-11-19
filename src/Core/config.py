@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     - Más alto: Menos trips creados (tolera más ruido GPS)
     """
     
-    TRIP_STILL_THRESHOLD_M: int = 50
+    TRIP_STILL_THRESHOLD_M: int = 700
     """
     Umbral de movimiento mínimo (metros).
     
