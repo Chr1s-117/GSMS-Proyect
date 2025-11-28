@@ -17,7 +17,6 @@ alembic==1.13.3
 # Geospatial (PostGIS + Geofences)
 geoalchemy2==0.15.2
 shapely>=2.0.0
-osmnx==1.9.4    #Probablemente puedes eliminar esta dependencia si no usas OSM
 
 # Utilities
 python-dotenv==1.0.1
