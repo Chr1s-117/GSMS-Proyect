@@ -1,4 +1,3 @@
-# src/main.py
 """
 FastAPI Application for GPS Tracking System
 ============================================
@@ -7,17 +6,16 @@ Architecture:
 - WebSocket: Live system logs via /logs endpoint
 - UDP Server: Receives GPS data from tracking devices
 - Background Services: UDP processing and cache management
+
 Version: 2.0.0 (REST-first architecture)
 """
-from dotenv import load_dotenv  # ← NUEVO
-import os  # ← NUEVO
+from dotenv import load_dotenv
+import os
 
 # ============================================================
 # ⚡ CARGAR VARIABLES DE ENTORNO
 # ============================================================
-# LOCAL: Lee archivo .env y carga variables al proceso
-# AWS: No encuentra .env, usa variables del sistema directamente
-load_dotenv()  # ← NUEVO
+load_dotenv()
 
 # ============================================================
 # Ahora sí, importar el resto
@@ -70,8 +68,8 @@ class StripPrefixMiddleware(BaseHTTPMiddleware):
     - Request: /dev/chris/gps_data/last
     - FastAPI ve: /gps_data/last
     """
-    def __init__(self, app, prefix: str):
-        super().__init__(app)
+    def _init_(self, app, prefix: str):
+        super()._init_(app)
         self.prefix = prefix
     
     async def dispatch(self, request, call_next):
@@ -116,6 +114,26 @@ _ws_allow_all, _ws_origins = _parse_origins(
 )
 
 # ============================================================
+# 🆕 INSTANCE ID MIDDLEWARE (PRESENTACIÓN)
+# ============================================================
+class InstanceHeaderMiddleware(BaseHTTPMiddleware):
+    """
+    Agrega X-Instance-ID a todas las respuestas HTTP.
+    Solo activo si INSTANCE_ID está en el entorno (AWS).
+    
+    Para presentaciones: permite identificar a qué instancia EC2
+    se conectó el usuario a través del balanceador de carga.
+    """
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        
+        instance_id = os.getenv("INSTANCE_ID")
+        if instance_id:
+            response.headers["X-Instance-ID"] = instance_id
+        
+        return response
+
+# ============================================================
 # APPLICATION LIFESPAN
 # ============================================================
 @asynccontextmanager
@@ -144,8 +162,8 @@ async def lifespan(app: FastAPI):
     geofence_file = Path("data/curated/barranquilla_v1.geojson")
     
     if not geofence_file.exists():
-        print("[STARTUP] ⚠️  No geofence file found at data/curated/barranquilla_v1.geojson")
-        print("[STARTUP] ⚠️  Skipping geofence import")
+        print("[STARTUP] ⚠  No geofence file found at data/curated/barranquilla_v1.geojson")
+        print("[STARTUP] ⚠  Skipping geofence import")
     else:
         with SessionLocal() as db:
             count = count_geofences(db, only_active=False)
@@ -180,7 +198,7 @@ async def lifespan(app: FastAPI):
         print("[SERVICES] Starting UDP server...")
         start_udp_server()
     else:
-        print("[SERVICES] ⚠️  UDP service disabled")
+        print("[SERVICES] ⚠  UDP service disabled")
     
     print("[STARTUP] ✅ Application ready")
     
@@ -208,13 +226,16 @@ app = FastAPI(
 if ROOT_PATH:
     app.add_middleware(StripPrefixMiddleware, prefix=ROOT_PATH)
 
-# 2. HTTP Cache (tu middleware existente)
+# 2. Instance ID Middleware (NUEVO - ANTES de Cache y CORS)
+app.add_middleware(InstanceHeaderMiddleware)
+
+# 3. HTTP Cache (tu middleware existente)
 app.add_middleware(HTTPCacheMiddleware)
 
-# 3. CORS (debe ir DESPUÉS de Cache para que headers CORS se agreguen)
+# 4. CORS (debe ir DESPUÉS de Cache para que headers CORS se agreguen)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_http_origins,  # ← Dinámico
+    allow_origins=_http_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -243,7 +264,6 @@ app.include_router(gps_datas.router, prefix="/gps_data", tags=["gps_data"])
 # ============================================================
 # WEBSOCKET ENDPOINTS
 # ============================================================
-
 async def socket_handler(ws: WebSocket, manager):
     """
     Generic WebSocket connection handler con validación CORS.
@@ -296,12 +316,12 @@ async def websocket_logs(ws: WebSocket):
 # FRONTEND STATIC FILES
 # ============================================================
 # Serve Angular frontend (must be last - catch-all route)
-frontend_path = os.path.join(os.path.dirname(__file__), "../front_deploy/browser")
+frontend_path = os.path.join(os.path.dirname(_file_), "../front_deploy/browser")
 if os.path.exists(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
     print(f"[STARTUP] ✅ Frontend mounted at {frontend_path}")
 else:
-    print(f"[STARTUP] ⚠️  Frontend not found at {frontend_path}")
+    print(f"[STARTUP] ⚠  Frontend not found at {frontend_path}")
 
 # ============================================================
 # ROOT ENDPOINT (API Info)
@@ -320,10 +340,12 @@ def api_info():
         "features": {
             "http_cache": "ETag-based (304 Not Modified)",
             "websockets": ["/logs"],
-            "udp_enabled": settings.UDP_ENABLED
+            "udp_enabled": settings.UDP_ENABLED,
+            "instance_tracking": bool(os.getenv("INSTANCE_ID"))
         },
         "endpoints": {
             "gps_data": "/gps_data/*",
-            "logs": "/logs (WebSocket)"
+            "logs": "/logs (WebSocket)",
+            "health": "/health"
         }
     }
