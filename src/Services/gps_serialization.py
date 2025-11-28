@@ -24,9 +24,32 @@ def serialize_gps_row(row: GPS_data | None, include_id: bool = False) -> dict[st
     # Normalizar timestamp (UTC ISO 8601 con 'Z')
     ts = data.get("Timestamp")
     if isinstance(ts, datetime):
-        data["Timestamp"] = ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        iso_str = ts.astimezone(timezone.utc).isoformat()
+        # Reemplazar +00:00 por Z (estándar ISO 8601 con Z)
+        data["Timestamp"] = iso_str.replace('+00:00', 'Z')
     else:
         data["Timestamp"] = None
+
+    # ========================================
+    # ✅ FORMATEAR GEOCERCA PARA FRONTEND
+    # ========================================
+    geofence_id = data.get("CurrentGeofenceID")
+    geofence_name = data.get("CurrentGeofenceName")
+    event_type = data.get("GeofenceEventType")
+
+    if geofence_id or event_type == 'exit':
+        data["geofence"] = {
+            "id": geofence_id,
+            "name": geofence_name,
+            "event": event_type
+        }
+    else:
+        data["geofence"] = None
+
+    # Remover campos internos del payload final
+    data.pop("CurrentGeofenceID", None)
+    data.pop("CurrentGeofenceName", None)
+    data.pop("GeofenceEventType", None)
 
     return data
 
@@ -40,4 +63,3 @@ def serialize_many(rows: list[GPS_data], include_id: bool = False) -> list[dict[
     - include_id: si es True, incluye el campo interno 'id' en cada dict.
     """
     return [serialized for row in rows if (serialized := serialize_gps_row(row, include_id=include_id)) is not None]
-
