@@ -68,8 +68,8 @@ class StripPrefixMiddleware(BaseHTTPMiddleware):
     - Request: /dev/chris/gps_data/last
     - FastAPI ve: /gps_data/last
     """
-    def _init_(self, app, prefix: str):
-        super()._init_(app)
+    def __init__(self, app, prefix: str):
+        super().__init__(app)
         self.prefix = prefix
     
     async def dispatch(self, request, call_next):
@@ -162,8 +162,8 @@ async def lifespan(app: FastAPI):
     geofence_file = Path("data/curated/barranquilla_v1.geojson")
     
     if not geofence_file.exists():
-        print("[STARTUP] ⚠  No geofence file found at data/curated/barranquilla_v1.geojson")
-        print("[STARTUP] ⚠  Skipping geofence import")
+        print("[STARTUP] ⚠️  No geofence file found at data/curated/barranquilla_v1.geojson")
+        print("[STARTUP] ⚠️  Skipping geofence import")
     else:
         with SessionLocal() as db:
             count = count_geofences(db, only_active=False)
@@ -198,7 +198,7 @@ async def lifespan(app: FastAPI):
         print("[SERVICES] Starting UDP server...")
         start_udp_server()
     else:
-        print("[SERVICES] ⚠  UDP service disabled")
+        print("[SERVICES] ⚠️  UDP service disabled")
     
     print("[STARTUP] ✅ Application ready")
     
@@ -316,12 +316,12 @@ async def websocket_logs(ws: WebSocket):
 # FRONTEND STATIC FILES
 # ============================================================
 # Serve Angular frontend (must be last - catch-all route)
-frontend_path = os.path.join(os.path.dirname(_file_), "../front_deploy/browser")
+frontend_path = os.path.join(os.path.dirname(__file__), "../front_deploy/browser")
 if os.path.exists(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
     print(f"[STARTUP] ✅ Frontend mounted at {frontend_path}")
 else:
-    print(f"[STARTUP] ⚠  Frontend not found at {frontend_path}")
+    print(f"[STARTUP] ⚠️  Frontend not found at {frontend_path}")
 
 # ============================================================
 # ROOT ENDPOINT (API Info)
