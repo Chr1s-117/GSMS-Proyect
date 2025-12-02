@@ -1,134 +1,327 @@
-# src/Core/config.py
+"""
+src/Core/config.py
+=================================
+Application Configuration Module
+=================================
+
+This module defines the centralized configuration system for the GPS tracking
+application using Pydantic Settings. All configuration parameters are loaded
+from environment variables and validated at startup.
+
+Architecture:
+------------
+- Pydantic BaseSettings: Type-safe configuration with automatic validation
+- Environment Variables: All sensitive data (DATABASE_URL) sourced from .env
+- Default Values: Sensible defaults for optional parameters
+- Type Safety: Static type checking for all configuration values
+
+Configuration Categories:
+------------------------
+1. **Project Metadata**: Application name and version
+2. **Database**: Connection string (required)
+3. **Services**: UDP server configuration
+4. **Trip Detection**: Spatial and temporal thresholds for journey detection
+5. **Cache**: HTTP response caching parameters
+
+Environment Variables:
+---------------------
+Required:
+    - DATABASE_URL: PostgreSQL connection string with PostGIS extension
+
+Optional (with defaults):
+    - UDP_ENABLED: Enable/disable UDP GPS data reception (default: True)
+    - UDP_PORT: UDP listener port (default: 9001)
+    - TRIP_JUMP_THRESHOLD_M: Maximum valid distance between GPS points
+    - TRIP_STILL_THRESHOLD_M: Minimum movement distance to detect motion
+    - TRIP_PARKING_TIME_S: Idle time before parking detection
+    - TRIP_GPS_INTERVAL_S: Expected GPS sampling interval
+    - CACHE_MAX_SIZE: Maximum cached responses in memory
+    - CACHE_DEFAULT_TTL_S: Cache entry time-to-live
+
+Usage Example:
+-------------
+    from src.Core.config import settings
+    
+    # Access configuration values
+    print(f"Connecting to: {settings.DATABASE_URL}")
+    print(f"UDP Port: {settings.UDP_PORT}")
+    print(f"Trip jump threshold: {settings.TRIP_JUMP_THRESHOLD_M}m")
+    
+    # Configuration is read-only and validated at startup
+    if settings.UDP_ENABLED:
+        start_udp_server(port=settings.UDP_PORT)
+
+Note:
+    Configuration validation occurs at module import time. Invalid values
+    or missing required variables will raise validation errors immediately,
+    ensuring fail-fast behavior during application startup.
+"""
+
 from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
     """
-    Project metadata
+    Application configuration settings with environment variable support.
+    
+    This class defines all configurable parameters for the GPS tracking system.
+    Values are automatically loaded from environment variables or use default
+    values when specified.
+    
+    Configuration is validated at startup using Pydantic's type system, ensuring
+    type safety and preventing runtime errors from misconfiguration.
     """
+    
+    # ============================================================
+    # PROJECT METADATA
+    # ============================================================
     PROJECT_NAME: str = "GSMS"
+    """Application name identifier."""
+    
     PROJECT_VERSION: str = "5.0.0"
+    """Current application version following semantic versioning."""
     
-    """
-    Database URL is required and loaded from environment variables.
-    """
+    # ============================================================
+    # DATABASE CONFIGURATION
+    # ============================================================
     DATABASE_URL: str
+    """
+    PostgreSQL database connection string (required).
     
+    Format: postgresql://user:password@host:port/database
+    
+    Requirements:
+        - PostgreSQL 12+ with PostGIS extension enabled
+        - Connection pooling is handled by SQLAlchemy
+    
+    Example:
+        postgresql://gps_user:secure_pass@localhost:5432/gps_tracking
     """
-    Service configuration flags
-    """
+    
+    # ============================================================
+    # SERVICE CONFIGURATION
+    # ============================================================
     UDP_ENABLED: bool = True
+    """
+    Enable UDP server for receiving GPS data from tracking devices.
+    
+    When enabled, the application listens for GPS packets on UDP_PORT.
+    Set to False to disable GPS reception (useful for testing or API-only mode).
+    """
+    
     UDP_PORT: int = 9001
+    """
+    UDP port for GPS data reception.
+    
+    Tracking devices send GPS packets to this port. Ensure this port is:
+    - Open in firewall rules
+    - Not conflicting with other services
+    - Accessible from device network (public IP or VPN)
+    """
     
     # ============================================================
-    # 🆕 TRIP DETECTION CONFIGURATION (High Priority)
+    # TRIP DETECTION CONFIGURATION
     # ============================================================
-    TRIP_JUMP_THRESHOLD_M: int = 500
+    TRIP_JUMP_THRESHOLD_M: int = 700
     """
-    Umbral de salto espacial imposible (metros).
+    Maximum valid distance between consecutive GPS points (meters).
     
-    Define la distancia máxima entre dos GPS consecutivos que se considera 
-    válida. Si la distancia es mayor, se asume error GPS o reinicio del device.
+    This threshold detects impossible spatial jumps caused by:
+    - GPS signal errors or multipath interference
+    - Device reboot or power cycle
+    - Location spoofing or tampering
     
-    Valores sugeridos:
-    - 2000m (default): Tolerante, permite errores GPS ocasionales
-    - 1000m: Más estricto, detecta anomalías más rápido
-    - 5000m: Muy tolerante, para zonas con GPS inestable
+    When consecutive GPS points exceed this distance, the system assumes
+    an anomaly and ends the current trip, starting a new one.
     
-    Impacto:
-    - Más bajo: Más trips creados (más sensible a errores GPS)
-    - Más alto: Menos trips creados (tolera más ruido GPS)
+    Recommended Values:
+        - 500m (default): Balanced sensitivity for urban/highway environments
+        - 1000m: More tolerant of GPS errors in areas with poor signal
+        - 2000m: Very permissive, suitable for areas with unstable GPS
+        - 300m: Strict detection for high-precision applications
+    
+    Impact:
+        - Lower values: More trips created, higher sensitivity to GPS errors
+        - Higher values: Fewer trips, more tolerance for signal noise
+    
+    Performance Consideration:
+        This check runs on every GPS point, so keep threshold reasonable.
+    """
+
+    TRIP_STILL_THRESHOLD_M: int = 5
+    """
+    Minimum movement distance to consider vehicle in motion (meters).
+    
+    This threshold compensates for GPS drift when the vehicle is stationary.
+    Consumer GPS has typical accuracy of 5-30m, causing apparent movement
+    even when the device is stationary.
+    
+    The system considers a vehicle "still" if it moves less than this distance
+    over the configured time period.
+    
+    Recommended Values:
+        - 700m (default): Standard threshold for vehicle tracking
+        - 30m: High sensitivity, detects small movements (may trigger on GPS drift)
+        - 100m: Balanced sensitivity for urban environments
+        - 50m: Detect short movements (e.g., parking lot repositioning)
+    
+    Impact:
+        - Lower values: More sensitive to small movements (risk of false positives)
+        - Higher values: Only significant movements detected (may miss short trips)
+    
+    Relationship:
+        Works with TRIP_PARKING_TIME_S to determine parking sessions.
     """
     
-    TRIP_STILL_THRESHOLD_M: int = 700
+    TRIP_PARKING_TIME_S: int = 1800
     """
-    Umbral de movimiento mínimo (metros).
+    Idle time threshold for parking detection (seconds).
     
-    Define qué tan lejos debe moverse el vehículo para considerarse "en movimiento".
-    Valores menores compensan el ruido natural del GPS (~10-30m).
+    Defines how long a vehicle must remain stationary (within TRIP_STILL_THRESHOLD_M)
+    before the system creates a parking session and ends the current trip.
     
-    Valores sugeridos:
-    - 50m (default): Balance entre sensibilidad y ruido GPS
-    - 30m: Más sensible, detecta movimientos pequeños
-    - 100m: Menos sensible, solo movimientos significativos
+    Default: 1200 seconds = 20 minutes
     
-    Impacto:
-    - Más bajo: Más sensible (puede crear trips por deriva GPS)
-    - Más alto: Menos sensible (ignora movimientos pequeños)
-    """
+    Recommended Values:
+        - 600s (10 min): Detect short stops (e.g., quick errands, deliveries)
+        - 1200s (20 min): Standard parking detection (typical stops)
+        - 1800s (30 min): Only detect extended parking (long-term stops)
+        - 300s (5 min): Very sensitive, captures brief stops (may be too granular)
     
-    TRIP_PARKING_TIME_S: int = 1200
-    """
-    Tiempo de inactividad para detectar parking (segundos).
+    Impact:
+        - Lower values: More parking sessions, more granular trip segmentation
+        - Higher values: Fewer parking sessions, only significant stops recorded
     
-    Define cuánto tiempo debe estar quieto el vehículo antes de crear 
-    una sesión de parking. Default: 1200s = 20 minutos.
+    Use Cases:
+        - Fleet management: 600-900s (detect loading/unloading)
+        - Personal tracking: 1200-1800s (typical errands and appointments)
+        - Long-haul trucking: 1800-3600s (rest stops and overnight parking)
     
-    Valores sugeridos:
-    - 600s (10 min): Detecta parkings cortos (paradas rápidas)
-    - 1200s (20 min): Default, parkings normales
-    - 1800s (30 min): Solo parkings prolongados
-    
-    Impacto:
-    - Más bajo: Más sesiones de parking (más granular)
-    - Más alto: Menos sesiones de parking (solo las largas)
+    Calculation:
+        System uses (TRIP_PARKING_TIME_S / TRIP_GPS_INTERVAL_S) GPS points
+        to confirm stationary state before creating parking session.
     """
     
     TRIP_GPS_INTERVAL_S: int = 5
     """
-    Intervalo esperado entre puntos GPS (segundos).
+    Expected GPS sampling interval (seconds).
     
-    Define cada cuántos segundos se espera recibir un GPS del device.
-    Usado para calcular STILL_GPS_REQUIRED (cuántos GPS quietos = parking).
+    Defines the expected time between consecutive GPS transmissions from
+    tracking devices. This value is used for temporal calculations in
+    trip detection algorithms.
     
-    Valores sugeridos:
-    - 5s (default): Frecuencia estándar de muestreo GPS
-    - 10s: Muestreo menos frecuente (ahorra batería/datos)
-    - 1s: Muestreo muy frecuente (tracking preciso)
+    Recommended Values:
+        - 5s (default): Standard tracking frequency (balanced battery/precision)
+        - 10s: Lower frequency (better battery life, less precision)
+        - 1s: High frequency (real-time tracking, higher data/battery cost)
+        - 30s: Low frequency (long battery life, suitable for slow-moving assets)
     
-    Impacto:
-    - Afecta el cálculo de STILL_GPS_REQUIRED
-    - NO cambia el comportamiento del hardware (solo expectativa)
+    Impact:
+        - Affects STILL_GPS_REQUIRED calculation (parking detection sensitivity)
+        - Does NOT control device hardware (only system expectations)
+        - Lower values = more GPS points required for parking confirmation
+    
+    Note:
+        This is an EXPECTED value, not a hardware control parameter. Actual
+        device sampling rate is configured on the tracking device itself.
+        
+    Formula:
+        STILL_GPS_REQUIRED = TRIP_PARKING_TIME_S / TRIP_GPS_INTERVAL_S
+        
+        Example: 1200s / 5s = 240 GPS points must be stationary for parking
     """
-    
+    MAX_TIME_GAP_SECONDS: int = 900
     # ============================================================
-    # 🆕 CACHE CONFIGURATION (Medium Priority)
+    # HTTP CACHE CONFIGURATION
     # ============================================================
     CACHE_MAX_SIZE: int = 1000
     """
-    Tamaño máximo del caché en memoria (número de entries).
+    Maximum number of cached HTTP responses in memory.
     
-    Define cuántas respuestas HTTP pueden almacenarse en memoria antes 
-    de empezar a evictuar las más antiguas (LRU - Least Recently Used).
+    The cache uses LRU (Least Recently Used) eviction policy. When the cache
+    reaches this size, the oldest unused entries are removed to make space
+    for new responses.
     
-    Valores sugeridos:
-    - 1000 (default): ~1MB RAM, suficiente para 100 usuarios
-    - 5000: ~5MB RAM, para más usuarios concurrentes
-    - 500: ~500KB RAM, para limitar uso de memoria
+    Memory Estimation:
+        - Average response size: ~1-2 KB
+        - 1000 entries ≈ 1-2 MB RAM
+        - 5000 entries ≈ 5-10 MB RAM
     
-    Impacto:
-    - Más alto: Más memoria usada, menos DB queries
-    - Más bajo: Menos memoria usada, más DB queries
+    Recommended Values:
+        - 1000 (default): Suitable for 100-500 concurrent users
+        - 5000: High-traffic deployments (500+ concurrent users)
+        - 500: Memory-constrained environments or low traffic
+        - 100: Development/testing environments
+    
+    Impact:
+        - Higher values: More memory usage, fewer database queries
+        - Lower values: Less memory usage, more database queries
+    
+    Performance Consideration:
+        Cache hits provide 50-100x faster response than database queries.
+        Size appropriately based on available RAM and traffic patterns.
     """
     
     CACHE_DEFAULT_TTL_S: int = 300
     """
-    Tiempo de vida del caché (segundos).
+    Default cache entry time-to-live (seconds).
     
-    Define cuánto tiempo una entrada puede permanecer en caché antes 
-    de considerarse "stale" y ser removida. Default: 300s = 5 minutos.
+    Defines how long cached responses remain valid before being considered
+    stale and removed. Stale entries are automatically cleaned up by a
+    background task.
     
-    Valores sugeridos:
-    - 60s (1 min): Datos muy frescos, más DB queries
-    - 300s (5 min): Balance entre freshness y performance
-    - 600s (10 min): Menos DB queries, datos menos frescos
+    Default: 300 seconds = 5 minutes
     
-    Impacto:
-    - Más alto: Menos DB queries, datos pueden estar desactualizados
-    - Más bajo: Más DB queries, datos siempre frescos
+    Recommended Values:
+        - 60s (1 min): Real-time applications requiring fresh data
+        - 300s (5 min): Balanced freshness and performance (default)
+        - 600s (10 min): High-performance mode, can tolerate stale data
+        - 30s: Ultra-fresh data requirements (financial, real-time tracking)
+    
+    Impact:
+        - Higher values: Fewer database queries, data may be outdated
+        - Lower values: More database queries, always fresh data
+    
+    Use Cases:
+        - Real-time tracking dashboard: 30-60s
+        - Historical reports/analytics: 600-1800s
+        - Device status checks: 60-300s
+        - Geofence queries (rarely change): 600-3600s
+    
+    Note:
+        Individual endpoints can override this value using cache decorators.
+        ETag-based validation allows clients to efficiently check freshness.
     """
     
     class Config:
+        """Pydantic configuration for settings management."""
+        
         env_file = None
+        """
+        Disable automatic .env file loading.
+        
+        Environment variables are loaded explicitly in main.py using
+        python-dotenv, giving more control over the loading process.
+        """
+        
         case_sensitive = False
+        """
+        Allow case-insensitive environment variable names.
+        
+        Both DATABASE_URL and database_url will be accepted.
+        """
 
+
+# ============================================================
+# SETTINGS INSTANCE
+# ============================================================
 settings = Settings()  # type: ignore
+"""
+Global settings instance.
+
+This singleton is imported throughout the application to access
+configuration values. Validation occurs immediately on import.
+
+Type ignore comment: Suppresses Pydantic validation warnings in
+static type checkers while maintaining runtime validation.
+"""

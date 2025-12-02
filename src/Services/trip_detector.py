@@ -67,6 +67,7 @@ class TripDetector:
         # Cargar umbrales desde configuración centralizada
         self.jump_threshold_meters = settings.TRIP_JUMP_THRESHOLD_M
         self.still_threshold_meters = settings.TRIP_STILL_THRESHOLD_M
+        self.max_time_gap = settings.MAX_TIME_GAP_SECONDS
         
         # Calcular GPS requeridos para parking
         self.still_gps_required = int(
@@ -77,6 +78,7 @@ class TripDetector:
         print(f"[TRIP_DETECTOR] Initialized with thresholds:")
         print(f"[TRIP_DETECTOR]   - Spatial jump: {self.jump_threshold_meters} m")
         print(f"[TRIP_DETECTOR]   - Still threshold: {self.still_threshold_meters} m")
+        print(f"[TRIP_DETECTOR]   - Time gap break: {self.max_time_gap} s")
         print(f"[TRIP_DETECTOR]   - Parking detection: {self.still_gps_required} GPS "
             f"(~{settings.TRIP_PARKING_TIME_S/60:.0f} min)")
         
@@ -166,6 +168,35 @@ class TripDetector:
         # Extraer datos del GPS anterior
         prev_lat = previous_gps['Latitude']
         prev_lon = previous_gps['Longitude']
+
+        prev_time = previous_gps.get('Timestamp') 
+
+        # ============================================
+        # ✅ NUEVA REGLA: ¿Hay un hueco temporal gigante?
+        # ============================================
+        if prev_time:
+            time_delta = (current_time - prev_time).total_seconds()
+            
+            if time_delta > self.max_time_gap:
+                print(f"[TRIP_DETECTOR] {device_id}: TIME GAP DETECTED - "
+                      f"{time_delta:.0f}s > {self.max_time_gap}s. Force Trip Break.")
+                
+                # Reseteamos estado porque la continuidad se rompió
+                self._update_device_state(
+                    device_id,
+                    consecutive_still_gps=0,
+                    last_location=(current_lat, current_lon),
+                    last_timestamp=current_time
+                )
+                
+                return {
+                    'action': 'close_and_create_trip', # Cerramos lo anterior, iniciamos nuevo
+                    'trip_type': 'movement', # Asumimos movimiento al reconectar
+                    'reason': f'Time gap detected ({time_delta/60:.0f} min). Forced trip break.',
+                    'trip_id': self._generate_trip_id(device_id, current_time, 'movement'),
+                    'close_previous': True,
+                    'consecutive_still_gps': 0
+                }
 
         # Calcular distancia
         delta_distance = calculate_haversine_distance(

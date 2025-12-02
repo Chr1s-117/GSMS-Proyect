@@ -420,6 +420,7 @@ def get_gps_history(
             polyline = []
             for p in history:
                 point = {
+                    "DeviceID": p["DeviceID"],
                     "lat": p["Latitude"],
                     "lon": p["Longitude"],
                     "timestamp": p["Timestamp"]
